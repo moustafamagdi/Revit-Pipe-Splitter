@@ -23,29 +23,45 @@ namespace PipeSplitter2024 {
     if (ui == null || ui.Document.IsFamilyDocument || ui.Document.IsReadOnly) { TaskDialog.Show("Pipe Splitter", "Open an editable Revit project first."); return Result.Cancelled; }
     using (var form = new SplitForm(ui)) form.ShowDialog(new WindowOwner(data.Application.MainWindowHandle));
     return Result.Succeeded;
-   } catch (Exception ex) { message = ex.ToString(); return Result.Failed; }
+   } catch (Exception ex) { DiagnosticLog.Error("Command",ex); message = ex.ToString(); return Result.Failed; }
   }
  }
  class WindowOwner : WF.IWin32Window { public IntPtr Handle {get; private set;} public WindowOwner(IntPtr h) {Handle=h;} }
  public class Row {
   public long Id {get;set;} public string Type {get;set;} public double Length_m {get;set;} public int Pieces {get;set;} public int Unions {get;set;}
   public double Min_m {get;set;} public double Max_m {get;set;} public string Lengths_m {get;set;} public string Status {get;set;}
+  public string Log {get;set;}
+  internal List<double> ActualLengths;
+  internal void AddLog(string text) {Log=(string.IsNullOrEmpty(Log)?"":Log+Environment.NewLine)+text;DiagnosticLog.Write("Pipe "+Id,text);}
   internal XYZ Start, End; internal List<double> Plan; internal bool Eligible, Passed; internal double PlanMinimum;
  }
  class StrictFailures : IFailuresPreprocessor {
   public string Detail = "";
+  readonly Row row; readonly bool strict;
+  internal StrictFailures(Row r,bool strictMode) {row=r;strict=strictMode;}
   public FailureProcessingResult PreprocessFailures(FailuresAccessor a) {
-   var failures=a.GetFailureMessages();
-   if(failures.Count>0) {Detail=string.Join("; ",failures.Select(f=>f.GetDescriptionText())); return FailureProcessingResult.ProceedWithRollBack;}
+   try {
+   bool rollback=false;
+   foreach(var failure in a.GetFailureMessages()) {
+    FailureSeverity severity=failure.GetSeverity();
+    string description=severity+": "+failure.GetDescriptionText();
+    row.AddLog(description);Detail+=(Detail.Length==0?"":"; ")+description;
+    if(severity==FailureSeverity.Warning) {
+     if(strict) rollback=true;
+     else a.DeleteWarning(failure); // Logged before dismissal, so non-strict batches avoid warning dialogs.
+    } else if(severity!=FailureSeverity.None) rollback=true;
+   }
+   if(rollback) return FailureProcessingResult.ProceedWithRollBack;
    return FailureProcessingResult.Continue;
+   } catch(Exception ex) {Detail="Failure handling could not complete: "+ex.Message;row.AddLog(ex.ToString());return FailureProcessingResult.ProceedWithRollBack;}
   }
  }
  public static class Engine {
   internal const double FeetPerMetre = 1.0 / 0.3048;
   internal static double Metres(double f) {return f * 0.3048;}
   internal static List<Connector> Ends(Pipe p) {return p.ConnectorManager.Connectors.Cast<Connector>().Where(c=>c.ConnectorType==ConnectorType.End).ToList();}
-  internal static Line Axis(Pipe p) {return ((LocationCurve)p.Location).Curve as Line;}
-  internal static void SetLengths(Row r, List<double> lengths) {r.Pieces=lengths.Count;r.Unions=lengths.Count-1;r.Min_m=lengths.Min();r.Max_m=lengths.Max();r.Lengths_m=string.Join(" + ",lengths.Select(v=>v.ToString("0.000000",CultureInfo.InvariantCulture)));}
+  internal static Line Axis(Pipe p) {var location=p==null?null:p.Location as LocationCurve;return location==null?null:location.Curve as Line;}
+  internal static void SetLengths(Row r, List<double> lengths) {r.ActualLengths=new List<double>(lengths);r.Pieces=lengths.Count;r.Unions=lengths.Count-1;r.Min_m=lengths.Min();r.Max_m=lengths.Max();r.Lengths_m=string.Join(" + ",lengths.Select(v=>v.ToString("0.000",CultureInfo.InvariantCulture)));}
   internal static string Exclusion(Document d, Pipe p) {
    if(p.IsPlaceholder) return "Skipped: placeholder";
    if(Axis(p)==null) return "Skipped: non-straight pipe";
@@ -57,19 +73,35 @@ namespace PipeSplitter2024 {
    return null;
   }
   internal static List<Row> Scan(Document d, ICollection<ElementId> selected, double max, double min) {
+   var tolerance=new ModelTolerance(d);
+   var routing=new Dictionary<string,string>();
    var pipes=new FilteredElementCollector(d).OfClass(typeof(Pipe)).Cast<Pipe>();
-   if(selected!=null) pipes=pipes.Where(p=>selected.Contains(p.Id));
+   if(selected!=null) {var selectedIds=new HashSet<ElementId>(selected);pipes=pipes.Where(p=>selectedIds.Contains(p.Id));}
    var rows=new List<Row>();
    foreach(var p in pipes.OrderBy(p=>p.Id.Value)) {
-    var curve=((LocationCurve)p.Location).Curve;
-    var r=new Row {Id=p.Id.Value,Type=d.GetElement(p.GetTypeId()).Name,Length_m=Metres(curve.Length),Start=curve.GetEndPoint(0),End=curve.GetEndPoint(1)};
+    var type=d.GetElement(p.GetTypeId());
+    var r=new Row {Id=p.Id.Value,Type=type==null?"Unknown pipe type":type.Name,Log=""};
+    rows.Add(r);
+    try {
+    var location=p.Location as LocationCurve;
+    var curve=location==null?null:location.Curve;
+    if(curve==null || !curve.IsBound) {r.Status="Skipped: missing or unbounded pipe curve";r.Pieces=1;continue;}
+    r.Length_m=Metres(curve.Length);r.Start=curve.GetEndPoint(0);r.End=curve.GetEndPoint(1);
     SetLengths(r,new List<double>{r.Length_m});
     string skip=Exclusion(d,p);
     if(skip!=null) r.Status=skip;
-    else if(r.Length_m<min-1e-7) r.Status="Existing short pipe: unchanged";
-    else if(r.Length_m<=max+1e-7) r.Status="Within limits: unchanged";
-    else try {r.Plan=Planner.Split(r.Length_m,max,min);SetLengths(r,r.Plan);r.Eligible=true;r.PlanMinimum=min;r.Status="Estimated: needs preview";} catch(Exception ex) {r.Status="Blocked: "+ex.Message;}
-    rows.Add(r);
+    else if(r.Length_m<min-tolerance.LengthMetres) r.Status="Existing short pipe: unchanged";
+    else if(r.Length_m<=max+tolerance.LengthMetres) r.Status="Within limits: unchanged";
+    else {
+     string key=UnionRouting.Key(p),problem;
+     if(!routing.TryGetValue(key,out problem)) {
+      try {UnionRouting.Resolve(d,p);problem="";}catch(Exception ex){problem=ex.Message;DiagnosticLog.Error("Routing precheck "+key,ex);}
+      routing[key]=problem;
+     }
+     if(problem.Length>0) {r.Status="Blocked: "+problem;r.AddLog(problem);continue;}
+     r.Plan=Planner.Split(r.Length_m,max,min);SetLengths(r,r.Plan);r.Eligible=true;r.PlanMinimum=min;r.Status="Estimated: needs preview";
+    }
+    } catch(Exception ex) {r.Status="Blocked: "+ex.Message;r.AddLog(ex.ToString());}
    }
    return rows;
   }
@@ -85,7 +117,7 @@ namespace PipeSplitter2024 {
    if(insulation==null) throw new Exception("Insulation: cannot read original pipe insulation");
    return new InsulationSpec {TypeId=insulation.GetTypeId(),Thickness=insulation.Thickness};
   }
-  static void PreserveInsulation(Document d, IList<ElementId> pipeIds, InsulationSpec original) {
+  static void PreserveInsulation(Document d, IList<ElementId> pipeIds, InsulationSpec original, ModelTolerance tolerance) {
    foreach(var pipeId in pipeIds) {
     var current=ReadInsulation(d,pipeId);
     // BreakCurve can propagate insulation. Keep it when present and only create missing hosts.
@@ -93,51 +125,67 @@ namespace PipeSplitter2024 {
      PipeInsulation.Create(d,pipeId,original.TypeId,original.Thickness);
     } else if(original==null && current!=null) {
      throw new Exception("Insulation: unexpected insulation appeared on an uninsulated pipe");
-    } else if(original!=null && (current.TypeId!=original.TypeId || Math.Abs(current.Thickness-original.Thickness)>1e-7)) {
+    } else if(original!=null && (current.TypeId!=original.TypeId || Math.Abs(current.Thickness-original.Thickness)>tolerance.LengthFeet)) {
      throw new Exception("Insulation: inherited type or thickness differs from the original");
     }
    }
    d.Regenerate();
    foreach(var pipeId in pipeIds) {
     var actual=ReadInsulation(d,pipeId);
-    if(original!=null && (actual==null || actual.TypeId!=original.TypeId || Math.Abs(actual.Thickness-original.Thickness)>1e-7))
+    if(original!=null && (actual==null || actual.TypeId!=original.TypeId || Math.Abs(actual.Thickness-original.Thickness)>tolerance.LengthFeet))
      throw new Exception("Insulation: final verification failed for pipe "+pipeId.Value);
     if(original==null && actual!=null) throw new Exception("Insulation: final verification failed for uninsulated pipe "+pipeId.Value);
    }
   }
   // Each pipe is atomic. Failed union placement or failed validation rolls back all of its cuts.
-  internal static bool Process(Document d, Row r, double max, double min, out string error) {
+  internal static bool Process(Document d, Row r, double max, double min, bool strict, Dictionary<string,TakeoutMeasurement> cache, out string error) {
    error="";
-   var plans=new List<double>(r.Plan);
-   const double finishedTolerance=1e-7; // metres: numerical tolerance, not a fabrication allowance
+   var tolerance=new ModelTolerance(d);
+   var plans=Planner.Split(r.Length_m,max,min);
+   double finishedTolerance=tolerance.LengthMetres;
+   bool cacheSeeded=false;
+   string cacheKey="";
    for(int attempt=0;attempt<8;attempt++) {
     using(var tx=new Autodesk.Revit.DB.Transaction(d,"Split pipe "+r.Id)) {
-     var handler=new StrictFailures();
+     var handler=new StrictFailures(r,strict);
      try {
       var original=d.GetElement(new ElementId(r.Id)) as Pipe;
       if(original==null || Exclusion(d,original)!=null) throw new Exception("Pipe no longer editable");
       var axis=Axis(original);
-      if(axis.GetEndPoint(0).DistanceTo(r.Start)>1e-6 || axis.GetEndPoint(1).DistanceTo(r.End)>1e-6) throw new Exception("Geometry changed; scan again");
+      if(axis.GetEndPoint(0).DistanceTo(r.Start)>tolerance.PointFeet || axis.GetEndPoint(1).DistanceTo(r.End)>tolerance.PointFeet) throw new Exception("Geometry changed; scan again");
+      ElementId routingPart=UnionRouting.Resolve(d,original);
+      var metadata=PipeMetadata.Capture(original);
+      cacheKey=UnionRouting.Key(original);
+      if(attempt==0) {
+       TakeoutMeasurement measured;
+       if(cache.TryGetValue(cacheKey,out measured) && measured.RoutingPart==routingPart.Value) {
+        try {plans=measured.Seed(r.Length_m,plans.Count,max,min);cacheSeeded=true;r.AddLog("Starting from cached union takeout; final verification remains required.");}
+        catch(ArgumentException ex) {r.AddLog("Cached takeout cannot satisfy these limits; using iterative fallback. "+ex.Message);cache.Remove(cacheKey);}
+       }
+      }
+      if(plans.Any(length=>length*FeetPerMetre<=tolerance.ShortFeet)) throw new Exception("Cut plan contains a Revit short curve");
       var insulation=ReadInsulation(d,original.Id);
       var endpoints=Ends(original); var own=new HashSet<long>{r.Id};
       var references=endpoints.Select(c=>ExternalRefs(c,own)).ToList();var origins=endpoints.Select(c=>c.Origin).ToList();
-      tx.Start();tx.SetFailureHandlingOptions(tx.GetFailureHandlingOptions().SetFailuresPreprocessor(handler).SetClearAfterRollback(true));
-      var ids=new List<ElementId>{original.Id}; var joins=new List<Tuple<ElementId,ElementId,XYZ>>();double distance=0;
+      tx.Start();tx.SetFailureHandlingOptions(tx.GetFailureHandlingOptions().SetFailuresPreprocessor(handler).SetClearAfterRollback(true).SetForcedModalHandling(true));
+      var ids=new List<ElementId>{original.Id}; var joins=new List<XYZ>();var unionIds=new List<ElementId>();double distance=0;
       for(int i=0;i<plans.Count-1;i++) {
        distance+=plans[i]*FeetPerMetre; XYZ point=r.Start+(r.End-r.Start).Normalize()*distance;
-       Pipe container=ids.Select(id=>d.GetElement(id) as Pipe).FirstOrDefault(p=> {var l=Axis(p);return l.Distance(point)<1e-6 && l.GetEndPoint(0).DistanceTo(point)>1e-6 && l.GetEndPoint(1).DistanceTo(point)>1e-6;});
+       Pipe container=ids.Select(id=>d.GetElement(id) as Pipe).FirstOrDefault(p=> {var l=Axis(p);return l!=null && l.Distance(point)<=tolerance.PointFeet && l.GetEndPoint(0).DistanceTo(point)>tolerance.ShortFeet && l.GetEndPoint(1).DistanceTo(point)>tolerance.ShortFeet;});
        if(container==null) throw new Exception("Cut point is outside the remaining pipe");
        ElementId added=PlumbingUtils.BreakCurve(d,container.Id,point);
        if(added==ElementId.InvalidElementId) throw new Exception("Revit rejected pipe break");
-       ids.Add(added);joins.Add(Tuple.Create(container.Id,added,point));d.Regenerate();
+       ids.Add(added);joins.Add(point);d.Regenerate();
+       metadata.MatchPlacement(d.GetElement(added));
       }
       // Resolve connectors by cut point after all breaks; a stored segment id can change ownership of a later joint.
       foreach(var join in joins) {
-       var pair=ids.SelectMany(id=>Ends((Pipe)d.GetElement(id))).Where(c=>c.Origin.DistanceTo(join.Item3)<1e-5).ToList();
+       var pair=ids.SelectMany(id=>Ends((Pipe)d.GetElement(id))).Where(c=>c.Origin.DistanceTo(join)<=tolerance.PointFeet).ToList();
        if(pair.Count!=2) throw new Exception("Cannot locate both cut connectors");
        if(pair[0].IsConnectedTo(pair[1])) pair[0].DisconnectFrom(pair[1]);
        var union=d.Create.NewUnionFitting(pair[0],pair[1]);
        if(union==null) throw new Exception("Routing preferences did not create a union");
+       unionIds.Add(union.Id);metadata.MatchPlacement(union);
        d.Regenerate();
        if(!pair.All(c=>c.AllRefs.Cast<Connector>().Any(x=>x.Owner.Id==union.Id))) throw new Exception("Union connection failed");
       }
@@ -146,7 +194,7 @@ namespace PipeSplitter2024 {
       var actual=pieces.Select(p=>Metres(Axis(p).Length)).ToList();
       own=new HashSet<long>(ids.Select(id=>id.Value));
       for(int k=0;k<origins.Count;k++) {
-       var end=pieces.SelectMany(p=>Ends(p)).FirstOrDefault(c=>c.Origin.DistanceTo(origins[k])<1e-6);
+       var end=pieces.SelectMany(p=>Ends(p)).FirstOrDefault(c=>c.Origin.DistanceTo(origins[k])<=tolerance.PointFeet);
        if(end==null || !ExternalRefs(end,own).SequenceEqual(references[k])) throw new Exception("Original end connection or position changed");
       }
       // Union takeout is measured from the actual fitted geometry, never guessed from family names.
@@ -155,17 +203,41 @@ namespace PipeSplitter2024 {
       bool finished=actual.Select((length,i)=>Math.Abs(length-targets[i])).All(delta=>delta<=finishedTolerance);
       if(!finished) {
        var corrected=Planner.CompensateCuts(plans,actual,targets);
-       if(Math.Abs(corrected.Sum()-r.Length_m)>1e-6) throw new Exception("Compensation would change the original route length");
+       if(Math.Abs(corrected.Sum()-r.Length_m)>finishedTolerance) throw new Exception("Compensation would change the original route length");
+       if(cacheSeeded) {r.AddLog("Cached estimate did not meet finished targets; iterative compensation used.");cache.Remove(cacheKey);cacheSeeded=false;}
        tx.RollBack();
        if(attempt==7) throw new Exception("Could not achieve finished pipe lengths after unions within 8 attempts; pipe unchanged");
        plans=corrected;continue;
       }
       if(actual.Min()<min-finishedTolerance || actual.Max()>max+finishedTolerance) throw new Exception("Finished pipe lengths are outside the specified limits");
-      PreserveInsulation(d,ids,insulation);
+      PreserveInsulation(d,ids,insulation,tolerance);
+      foreach(var piece in pieces) metadata.VerifyPipe(piece,tolerance);
+      foreach(var unionId in unionIds) {
+       var fitting=(FamilyInstance)d.GetElement(unionId);metadata.VerifyPlacement(fitting);
+       var unionEnds=fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>().Where(c=>c.ConnectorType==ConnectorType.End).ToList();
+       if(unionEnds.Count!=2 || unionEnds.Any(c=>!c.AllRefs.Cast<Connector>().Any(x=>x.ConnectorType==ConnectorType.End && own.Contains(x.Owner.Id.Value) && c.IsConnectedTo(x)))) throw new Exception("Final union connection verification failed");
+      }
+      var finalLengths=pieces.Select(p=>Metres(Axis(p).Length)).ToList();
+      if(finalLengths.Select((value,index)=>Math.Abs(value-targets[index])).Any(delta=>delta>finishedTolerance)) throw new Exception("Finished lengths changed during final regeneration");
+      actual=finalLengths;
+      for(int k=0;k<origins.Count;k++) {
+       var end=pieces.SelectMany(p=>Ends(p)).FirstOrDefault(c=>c.Origin.DistanceTo(origins[k])<=tolerance.PointFeet);
+       if(end==null || !ExternalRefs(end,own).SequenceEqual(references[k])) throw new Exception("Original end connection changed during final regeneration");
+      }
+      var measurement=TakeoutMeasurement.Measure(plans,actual,routingPart.Value,finishedTolerance);
       var status=tx.Commit();
       if(status!=TransactionStatus.Committed) throw new Exception("Revit rolled back: "+handler.Detail);
+      if(measurement!=null) {cache[cacheKey]=measurement;r.AddLog("Measured takeout cached for pipe type/size; attempts: "+(attempt+1));}
+      else {cache.Remove(cacheKey);r.AddLog("Takeout varies between joins; measurement not cached.");}
       r.Plan=new List<double>(plans);SetLengths(r,actual);r.Passed=true;return true;
-     } catch(Exception ex) {if(tx.GetStatus()==TransactionStatus.Started) tx.RollBack();error=ex.Message;return false;}
+     } catch(Exception ex) {
+      if(tx.GetStatus()==TransactionStatus.Started) tx.RollBack();
+      r.AddLog(ex.ToString());
+      if(cacheSeeded && attempt==0 && !(ex is Autodesk.Revit.Exceptions.RegenerationFailedException) && handler.Detail.Length==0) {
+       cache.Remove(cacheKey);cacheSeeded=false;plans=Planner.Split(r.Length_m,max,min);r.AddLog("Cached trial rolled back; retrying without cache.");continue;
+      }
+      error=ex.Message;return false;
+     }
     }
    }
    error="Unable to satisfy length limits";return false;
@@ -175,6 +247,8 @@ namespace PipeSplitter2024 {
   readonly UIDocument ui; readonly Document doc;
   WF.NumericUpDown maximum=new WF.NumericUpDown(), minimum=new WF.NumericUpDown();
   WF.ComboBox scope=new WF.ComboBox(); WF.DataGridView grid=new WF.DataGridView();
+  WF.CheckBox strictMode=new WF.CheckBox {Text="Strict mode (roll back on warnings)",AutoSize=true,Checked=false};
+  readonly Dictionary<string,TakeoutMeasurement> takeoutCache=new Dictionary<string,TakeoutMeasurement>();
   WF.Label summary=new WF.Label(), note=new WF.Label(); WF.Button scan, preview, apply, export;
   List<Row> rows=new List<Row>(); bool verified=false;
   List<Row> visibleRows=new List<Row>();
@@ -190,7 +264,7 @@ namespace PipeSplitter2024 {
    var settings=new WF.FlowLayoutPanel {Dock=WF.DockStyle.Fill};layout.Controls.Add(settings,0,1);
    settings.Controls.Add(new WF.Label {Text="Finished target (m)",AutoSize=true,Padding=new WF.Padding(0,8,0,0)});
    ConfigureNumber(maximum,6);settings.Controls.Add(maximum);settings.Controls.Add(new WF.Label {Text="Minimum length (m)",AutoSize=true,Padding=new WF.Padding(12,8,0,0)});ConfigureNumber(minimum,0.5m);settings.Controls.Add(minimum);
-   scope.DropDownStyle=WF.ComboBoxStyle.DropDownList;scope.Width=230;scope.Items.AddRange(new object[]{"All model pipes","Selected pipes only"});scope.SelectedIndex=0;settings.Controls.Add(scope);
+   scope.DropDownStyle=WF.ComboBoxStyle.DropDownList;scope.Width=230;scope.Items.AddRange(new object[]{"All model pipes","Selected pipes only"});scope.SelectedIndex=0;settings.Controls.Add(scope);settings.Controls.Add(strictMode);
    summary.Dock=WF.DockStyle.Fill;summary.Text="Set the maximum and minimum lengths, then click Scan.";layout.Controls.Add(summary,0,2);
    filterInfo.Dock=WF.DockStyle.Fill;filterInfo.AutoEllipsis=true;layout.Controls.Add(filterInfo,0,3);
    grid.Dock=WF.DockStyle.Fill;grid.ReadOnly=true;grid.AllowUserToAddRows=false;grid.AllowUserToDeleteRows=false;grid.AutoSizeColumnsMode=WF.DataGridViewAutoSizeColumnsMode.DisplayedCells;grid.BackgroundColor=Color.White;grid.SelectionMode=WF.DataGridViewSelectionMode.FullRowSelect;grid.RowHeadersVisible=false;layout.Controls.Add(grid,0,4);
@@ -209,11 +283,11 @@ namespace PipeSplitter2024 {
    };
    var buttons=new WF.FlowLayoutPanel {Dock=WF.DockStyle.Fill,Padding=new WF.Padding(0,12,0,0)};layout.Controls.Add(buttons,0,5);
    scan=Button(buttons,"1. Scan",()=>Scan());preview=Button(buttons,"2. Preview",()=>Run(false));apply=Button(buttons,"3. Apply",()=>Run(true));export=Button(buttons,"Export visible CSV",()=>Export());Button(buttons,"Clear all filters",()=>{filters.Clear();ApplyView();});Button(buttons,"Close",()=>Close());
-   preview.Enabled=apply.Enabled=export.Enabled=false;maximum.ValueChanged+=(s,e)=>InvalidateScan();minimum.ValueChanged+=(s,e)=>InvalidateScan();scope.SelectedIndexChanged+=(s,e)=>InvalidateScan();
+   preview.Enabled=apply.Enabled=export.Enabled=false;maximum.ValueChanged+=(s,e)=>InvalidateScan();minimum.ValueChanged+=(s,e)=>InvalidateScan();scope.SelectedIndexChanged+=(s,e)=>InvalidateScan();strictMode.CheckedChanged+=(s,e)=>InvalidateScan();
    ApplyView();
   }
   void EditFilter(string column) {
-   bool numeric=typeof(Row).GetProperty(column).PropertyType!=typeof(string);
+   bool numeric=RowColumns.IsNumeric(column);
    ColumnFilter existing;filters.TryGetValue(column,out existing);
    using(var dialog=new WF.Form {Text="Filter: "+column,Width=430,Height=230,StartPosition=WF.FormStartPosition.CenterParent,FormBorderStyle=WF.FormBorderStyle.FixedDialog,MaximizeBox=false,MinimizeBox=false,Font=Font}) {
     var op=new WF.ComboBox {Left=20,Top=20,Width=370,DropDownStyle=WF.ComboBoxStyle.DropDownList};
@@ -236,7 +310,7 @@ namespace PipeSplitter2024 {
    }
   }
   bool Matches(Row row,string column,ColumnFilter filter) {
-   object value=typeof(Row).GetProperty(column).GetValue(row,null);
+   object value=RowColumns.Value(row,column);
    if(value is string) {
     string text=(string)value??"",term=filter.Text;
     switch(filter.Operator) {
@@ -248,52 +322,56 @@ namespace PipeSplitter2024 {
      case "Ends with":return text.EndsWith(term,StringComparison.OrdinalIgnoreCase);
     }
    }
-   // Match the six decimal places displayed in length columns; IDs/counts stay exact.
-   decimal number=value is double?Convert.ToDecimal(Math.Round((double)value,6)):Convert.ToDecimal(value);
+   // Match the three decimal places displayed in length columns; IDs/counts stay exact.
+   decimal number=value is double?Convert.ToDecimal(Math.Round((double)value,3)):Convert.ToDecimal(value);
    switch(filter.Operator) {case "=":return number==filter.Number;case "!=":return number!=filter.Number;case ">":return number>filter.Number;case ">=":return number>=filter.Number;case "<":return number<filter.Number;case "<=":return number<=filter.Number;}
    return false;
   }
   void ApplyView() {
    var query=rows.Where(r=>filters.All(f=>Matches(r,f.Key,f.Value)));
-   var property=typeof(Row).GetProperty(sortColumn);
-   visibleRows=(descending?query.OrderByDescending(r=>property.GetValue(r,null)):query.OrderBy(r=>property.GetValue(r,null))).ThenBy(r=>r.Id).ToList();
+
+   visibleRows=(descending?query.OrderByDescending(r=>RowColumns.Value(r,sortColumn)):query.OrderBy(r=>RowColumns.Value(r,sortColumn))).ThenBy(r=>r.Id).ToList();
    grid.DataSource=null;grid.DataSource=visibleRows;
    foreach(WF.DataGridViewColumn c in grid.Columns) {
     c.SortMode=WF.DataGridViewColumnSortMode.Programmatic;
     c.HeaderText=c.DataPropertyName+(filters.ContainsKey(c.DataPropertyName)?" [filter]":"");
     c.HeaderCell.SortGlyphDirection=c.DataPropertyName==sortColumn?(descending?WF.SortOrder.Descending:WF.SortOrder.Ascending):WF.SortOrder.None;
-    if(c.ValueType==typeof(double)) c.DefaultCellStyle.Format="0.000000";
+    if(c.ValueType==typeof(double)) c.DefaultCellStyle.Format="0.000";
    }
    filterInfo.Text="Showing "+visibleRows.Count+" of "+rows.Count+" rows. Click a header to sort; right-click to filter.\nFilters affect the table and CSV only. Preview, Apply and summary totals use the full scan scope.\n"+(filters.Count==0?"No column filters.":string.Join("; ",filters.Select(f=>f.Key+" "+f.Value.Operator+" "+f.Value.Text)));
   }
   void ConfigureNumber(WF.NumericUpDown n,decimal value) {n.DecimalPlaces=3;n.Minimum=0.001m;n.Maximum=100000;n.Increment=0.1m;n.Value=value;n.Width=100;}
-  WF.Button Button(WF.Control parent,string text,Action action) {var b=new WF.Button {Text=text,AutoSize=true,Height=36};b.Click+=(s,e)=>{try {action();}catch(Exception ex){WF.MessageBox.Show(this,ex.Message,"Pipe Splitter");}};parent.Controls.Add(b);return b;}
+  WF.Button Button(WF.Control parent,string text,Action action) {var b=new WF.Button {Text=text,AutoSize=true,Height=36};b.Click+=(s,e)=>{try {action();}catch(Exception ex){DiagnosticLog.Error("UI action",ex);WF.MessageBox.Show(this,ex.Message,"Pipe Splitter");}};parent.Controls.Add(b);return b;}
   void InvalidateScan() {verified=false;preview.Enabled=apply.Enabled=export.Enabled=false;summary.Text="Settings changed. Click Scan again to update the results.";}
   void Scan() {
    double max=(double)maximum.Value,min=(double)minimum.Value;
+   var tolerances=new ModelTolerance(doc);
+   DiagnosticLog.Write("Scan", "Document="+doc.Title+"; vertex tolerance (ft)="+tolerances.PointFeet.ToString("R",CultureInfo.InvariantCulture)+"; short curve (ft)="+tolerances.ShortFeet.ToString("R",CultureInfo.InvariantCulture)+"; finished tolerance (m)="+tolerances.LengthMetres.ToString("R",CultureInfo.InvariantCulture));
    if(min>max || min*Engine.FeetPerMetre<=doc.Application.ShortCurveTolerance*2) throw new Exception("Minimum must be <= maximum and above Revit short-curve tolerance.");
    var selected=scope.SelectedIndex==1?ui.Selection.GetElementIds():null;
    if(selected!=null && selected.Count==0) throw new Exception("Select pipes in Revit before opening this command.");
-   rows=Engine.Scan(doc,selected,max,min);verified=false;RefreshRows("ESTIMATE");preview.Enabled=rows.Any(r=>r.Eligible);apply.Enabled=false;export.Enabled=rows.Count>0;
+   takeoutCache.Clear();rows=Engine.Scan(doc,selected,max,min);verified=false;RefreshRows("ESTIMATE");preview.Enabled=rows.Any(r=>r.Eligible);apply.Enabled=false;export.Enabled=rows.Count>0;
   }
   void RefreshRows(string phase) {
    ApplyView();
    var applicable=rows.Where(r=>r.Eligible && (r.Passed || r.Status.StartsWith("Estimated"))).ToList();
+   var applicableIds=new HashSet<long>(applicable.Select(r=>r.Id));
    summary.Text=phase+" | Pipes scanned: "+rows.Count+" | Pipes to split: "+applicable.Count+" | Result pieces (split pipes): "+applicable.Sum(r=>r.Pieces)+" | Unions: "+applicable.Sum(r=>r.Unions)+"\n"+
-    "Min / Max (split pipes): "+(applicable.Count>0?applicable.Min(r=>r.Min_m).ToString("0.000000")+" / "+applicable.Max(r=>r.Max_m).ToString("0.000000")+" m":"—")+" | Existing short: "+rows.Count(r=>r.Status.StartsWith("Existing short"))+" | Skipped / blocked: "+rows.Count(r=>r.Status.StartsWith("Skipped")||r.Status.StartsWith("Blocked")||r.Status.StartsWith("Failed"))+"\n"+
-    "Total resulting pipes in scan scope: "+rows.Sum(r=>applicable.Contains(r)?r.Pieces:1)+" | Exact preview includes union takeout. Existing short pipes remain unchanged.";
+    "Min / Max (split pipes): "+(applicable.Count>0?applicable.Min(r=>r.Min_m).ToString("0.000")+" / "+applicable.Max(r=>r.Max_m).ToString("0.000")+" m":"—")+" | Existing short: "+rows.Count(r=>r.Status.StartsWith("Existing short"))+" | Skipped / blocked: "+rows.Count(r=>r.Status.StartsWith("Skipped")||r.Status.StartsWith("Blocked")||r.Status.StartsWith("Failed"))+"\n"+
+    "Total resulting pipes in scan scope: "+rows.Sum(r=>applicableIds.Contains(r.Id)?r.Pieces:1)+" | Exact preview includes union takeout. Existing short pipes remain unchanged.";
   }
   void Run(bool commit) {
    if(commit && !verified) throw new Exception("Preview first");
    var targets=rows.Where(r=>r.Eligible && (!commit||r.Passed)).ToList();
    if(commit && WF.MessageBox.Show(this,"Split "+targets.Count+" pipes in the full scan scope and add unions?\nColumn filters do not limit execution.\nYou can undo the entire operation in one step.","Apply pipe splitting",WF.MessageBoxButtons.YesNo,WF.MessageBoxIcon.Question)!=WF.DialogResult.Yes) return;
+   DiagnosticLog.Write(commit?"Apply":"Preview","Start; strict="+strictMode.Checked+"; pipes="+targets.Count);
    verified=false;scan.Enabled=preview.Enabled=apply.Enabled=false;UseWaitCursor=true;int ok=0,failed=0;
    try {
     using(var group=new TransactionGroup(doc,"Pipe Splitter - "+(commit?"Apply":"Preview"))) {
      group.Start();
      foreach(var r in targets) {
       r.Passed=false;string error;
-      if(Engine.Process(doc,r,(double)maximum.Value,(double)minimum.Value,out error)) {r.Status=commit?"Applied":"Preview OK";ok++;}
+      if(Engine.Process(doc,r,(double)maximum.Value,(double)minimum.Value,strictMode.Checked,takeoutCache,out error)) {r.Status=commit?"Applied":"Preview OK";ok++;}
       else {r.Status="Failed: "+error;Engine.SetLengths(r,new List<double>{r.Length_m});failed++;}
       summary.Text=(commit?"Applying":"Previewing")+" "+(ok+failed)+" / "+targets.Count;summary.Refresh();
      }
@@ -302,17 +380,17 @@ namespace PipeSplitter2024 {
     }
     verified=!commit;RefreshRows(commit?"APPLIED":"EXACT PREVIEW - trial changes rolled back");
     if(commit) {foreach(var r in rows) r.Eligible=false;WF.MessageBox.Show(this,"Applied: "+ok+"\nFailed and unchanged: "+failed+"\nScan again for updated model totals.","Pipe Splitter");}
-   } catch {
-    verified=false;
+   } catch(Exception ex) {
+    DiagnosticLog.Error("Batch rolled back",ex);takeoutCache.Clear();verified=false;
     foreach(var r in targets) {r.Passed=false;r.Status="Failed: batch rolled back; scan again";Engine.SetLengths(r,new List<double>{r.Length_m});}
     RefreshRows("ROLLED BACK");throw;
-   } finally {UseWaitCursor=false;scan.Enabled=true;preview.Enabled=!commit && rows.Any(r=>r.Eligible);apply.Enabled=verified && rows.Any(r=>r.Passed);}
+   } finally {UseWaitCursor=false;scan.Enabled=true;preview.Enabled=!commit && rows.Any(r=>r.Eligible);apply.Enabled=verified && rows.Any(r=>r.Passed);if(DiagnosticLog.LastWriteError.Length>0) WF.MessageBox.Show(this,DiagnosticLog.LastWriteError,"Diagnostic log unavailable");}
   }
   void Export() {
    using(var dialog=new WF.SaveFileDialog {Filter="CSV files|*.csv",FileName="PipeSplitter-report.csv"}) {
     if(dialog.ShowDialog(this)!=WF.DialogResult.OK)return;
-    var lines=new List<string>{"ElementId,Type,OriginalLength_m,Pieces,Unions,Min_m,Max_m,Lengths_m,Status"};
-    foreach(var r in visibleRows) lines.Add(string.Join(",",new object[]{r.Id,r.Type,r.Length_m,r.Pieces,r.Unions,r.Min_m,r.Max_m,r.Lengths_m,r.Status}.Select(v=>"\""+Convert.ToString(v,CultureInfo.InvariantCulture).Replace("\"","\"\"")+"\"")));
+    var lines=new List<string>{"ElementId,Type,OriginalLength_m,Pieces,Unions,Min_m,Max_m,Lengths_m,Status,Log"};
+    foreach(var r in visibleRows) lines.Add(string.Join(",",new object[]{r.Id,r.Type,r.Length_m,r.Pieces,r.Unions,r.Min_m,r.Max_m,r.ActualLengths==null?"":string.Join(" + ",r.ActualLengths.Select(v=>v.ToString("R",CultureInfo.InvariantCulture))),r.Status,r.Log}.Select(v=>"\""+Convert.ToString(v,CultureInfo.InvariantCulture).Replace("\"","\"\"")+"\"")));
     File.WriteAllLines(dialog.FileName,lines,new UTF8Encoding(true));
    }
   }

@@ -36,7 +36,7 @@ For optional persistent installation, keep this repository folder in a stable lo
 
 ## Lengths and preview
 
-Lengths are actual Revit pipe curve lengths in metres. Preview creates pipe segments and unions in temporary transactions, measures the resulting geometry, compensates cut positions, verifies constraints, and rolls back the trial. It can attempt compensation up to eight times per pipe. Apply starts from the successful preview's cut positions and validates again.
+Lengths are actual Revit pipe curve lengths in metres. Preview creates pipe segments and unions in temporary transactions, measures the resulting geometry, compensates cut positions, verifies constraints, and rolls back the trial. It can attempt compensation up to eight times per pipe. A dialog-local cache of measured takeout per pipe type/size seeds subsequent pipes and Apply; every pipe is verified again, and a wrong cache estimate falls back to iterative compensation. The cache is cleared on a new Scan. These Revit behaviors need manual verification.
 
 Full pieces target the specified finished length. Remainder pieces may be shorter to respect the minimum. The sum of finished pipe lengths may be less than the original route length because unions occupy part of the route. No separate stock, weld-gap, or insertion-depth allowance is calculated beyond the union family's actual Revit geometry.
 
@@ -44,7 +44,7 @@ Preview can be slow on large models and runs synchronously. Use Selected pipes o
 
 ## Filtering and sorting
 
-Click a column header to toggle sorting; right-click to set its filter. Multiple column filters are combined with AND. Text matching ignores case. Numeric length filtering uses the six decimal places shown in the table. CSV export follows the visible rows and sort order.
+Click a column header to toggle sorting; right-click to set its filter. Multiple column filters are combined with AND. Text matching ignores case. Numeric length filtering uses the three decimal places shown in the table. CSV export follows the visible rows and sort order.
 
 **Filters affect the table and CSV only. Preview, Apply, and summary totals use the full scan scope, including hidden rows.**
 
@@ -56,12 +56,12 @@ Click a column header to toggle sorting; right-click to set its filter. Multiple
 - Existing pipes shorter than the minimum remain unchanged and are flagged.
 - Suitable Union routing rules and loaded families must exist for the pipe size.
 - Pipe insulation type and thickness are preserved; custom insulation parameters and tags are not explicitly copied. New unions are not insulated by this tool.
-- Failed constraints or Revit transaction warnings roll back the affected pipe.
+- Errors and failed constraints roll back the affected pipe. Warnings are logged and dismissed by default; Strict mode (default OFF) also rolls back warning-producing pipes. Failure processing needs manual verification.
 - Preview rollback does not guarantee relinquishment of worksharing ownership.
 
 ## Validation status
 
-Version 1.3 was compiled against the local Revit 2024 API. Standalone arithmetic checks covered compensation, remainder redistribution, and infeasible constraints. The DLL has **not been run or tested inside Revit** by the assistant, per the user's instruction. Actual family-dependent behavior remains for user validation.
+Phase 1 compiles with the .NET Framework csc compiler and /langversion:5 against the local Revit 2024 API. Test-Planner.ps1 compiles and runs an isolated console harness for Planner: deterministic edge cases, 50,000 seeded allocations, and 10,000 synthetic takeout cases. These are arithmetic checks, not Revit validation. The DLL has **not been run or tested inside Revit** by the assistant, per the user's instruction. Actual family-dependent behavior remains for user validation.
 
 ## Repository files
 
@@ -75,3 +75,24 @@ Generated DLLs and build artifacts are ignored by Git.
 ## Development workflow
 
 This repository is the source of truth for all future changes. Build.ps1 overwrites the single output PipeSplitter2024.dll. Do not create version-suffixed DLLs or release folders. If Revit locks the file, close Revit and rebuild with the same filename. The assistant must not run or test the DLL inside Revit unless the user changes that instruction.
+
+## Phase 1 handoff
+
+Only Phase 1 of the independent review is implemented. Phases 2-4 require explicit user confirmation before work continues.
+
+- See PHASE1-CHANGELOG.md for each behavior change and its reason.
+- See MANUAL-TEST-PLAN.md: every Revit API behavior is **needs manual verification**.
+- Phase1Support.cs contains focused correctness helpers; the Phase 4 file restructuring is deferred.
+- Row logs include callback warnings and exception details. The append-only diagnostic file is `%APPDATA%\PipeSplitter\log.txt`.
+- Routing Preferences are prechecked by pipe type/diameter before splitting. A matching rule does not prove that a family can be placed.
+- New unions and pieces receive the original workset and creation/demolition phases. Final validation compares pipe type, system type, reference level, diameter, phases, workset and insulation.
+- Point coincidence uses Application.VertexTolerance. Scalar length tolerance is Application.ShortCurveTolerance / 100 (converted to metres as needed). This is an explicit acceptance policy needing manual verification, not a minimum creation distance. Planned pieces must exceed ShortCurveTolerance; input minimum remains greater than twice ShortCurveTolerance.
+- UI lengths have 3 decimal places; calculations retain doubles, and individual CSV segment lengths use round-trip formatting.
+
+Run the arithmetic harness without loading Revit:
+
+```powershell
+.\Test-Planner.ps1
+```
+
+A successful build or console harness does not establish Revit correctness. Cache acceleration, warning handling, metadata propagation, placement and transaction/undo behavior all remain unverified in Revit.

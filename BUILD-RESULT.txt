@@ -1,0 +1,17 @@
+Phase 1 build and arithmetic report
+
+Build: SUCCESS
+Compiler: C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
+Language: /langversion:5
+Target: x64 library; local Revit 2024 RevitAPI.dll and RevitAPIUI.dll
+Output: PipeSplitter2024.dll (fixed filename; overwritten)
+Compiler errors: 0
+Compiler warnings: 0
+
+Console harness: Test-Planner.ps1
+50,000 seeded allocations: 46917 feasible; 3083 correctly rejected.
+10,000 synthetic asymmetric-takeout cases passed (arithmetic only).
+PASS: 523152 assertions. No Revit assemblies loaded; no Revit API behavior tested.
+
+Revit runtime: NOT EXECUTED. All API behaviors need manual verification.
+Only Phase 1 implemented. Awaiting the user's manual verification and confirmation.
