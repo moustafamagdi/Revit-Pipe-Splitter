@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Autodesk.Revit.DB;
 
 namespace PipeSplitter2024
@@ -9,6 +10,8 @@ namespace PipeSplitter2024
         private int workset;
         private ElementId created;
         private ElementId demolished;
+
+        internal int WorksetValue { get { return workset; } }
 
         internal static InsulationPlacement Capture(Element element)
         {
@@ -33,56 +36,84 @@ namespace PipeSplitter2024
                 + "; DemolishedPhase=" + demolished.Value;
         }
 
-        internal void MatchPlacement(Element element)
+        internal string Differences(Element element)
         {
+            var differences = new List<string>();
+            if (element.WorksetId.IntegerValue != workset)
+                differences.Add("Workset expected=" + workset + ", actual=" + element.WorksetId.IntegerValue);
+            if (element.CreatedPhaseId != created)
+                differences.Add("Phase Created expected=" + created.Value + ", actual=" + element.CreatedPhaseId.Value);
+            if (element.DemolishedPhaseId != demolished)
+                differences.Add("Phase Demolished expected=" + demolished.Value + ", actual=" + element.DemolishedPhaseId.Value);
+            return string.Join("; ", differences);
+        }
+
+        internal void MatchPlacement(Element element, Action<string> log)
+        {
+            log("Insulation " + element.Id.Value + " placement after creation/split: expected ["
+                + Description() + "]; actual [" + Capture(element).Description() + "]");
+            if (Matches(element)) return;
+            string before = Capture(element).Description();
+            string field = "placement verification";
+            log("Matching insulation " + element.Id.Value + " to ORIGINAL insulation. " + Differences(element));
             try
             {
                 if (element.WorksetId.IntegerValue != workset)
                 {
+                    field = "Workset";
                     Parameter parameter = element.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
                     RequireWritable(parameter, "Workset");
                     if (!parameter.Set(workset))
                         throw new InvalidOperationException("Workset assignment was rejected");
                 }
-                if (element.CreatedPhaseId != created || element.DemolishedPhaseId != demolished)
+                if (element.CreatedPhaseId != created)
                 {
                     // Clear demolition before changing creation, retaining the original insulation baseline.
                     if (element.DemolishedPhaseId != ElementId.InvalidElementId)
                     {
+                        field = "Phase Demolished (temporary clear before changing Phase Created)";
                         RequireWritable(element.get_Parameter(BuiltInParameter.PHASE_DEMOLISHED), "Phase Demolished");
                         element.DemolishedPhaseId = ElementId.InvalidElementId;
                     }
-                    if (element.CreatedPhaseId != created)
-                    {
-                        RequireWritable(element.get_Parameter(BuiltInParameter.PHASE_CREATED), "Phase Created");
-                        element.CreatedPhaseId = created;
-                    }
-                    if (element.DemolishedPhaseId != demolished)
-                    {
-                        RequireWritable(element.get_Parameter(BuiltInParameter.PHASE_DEMOLISHED), "Phase Demolished");
-                        element.DemolishedPhaseId = demolished;
-                    }
+                    field = "Phase Created";
+                    RequireWritable(element.get_Parameter(BuiltInParameter.PHASE_CREATED), "Phase Created");
+                    element.CreatedPhaseId = created;
                 }
+                if (element.DemolishedPhaseId != demolished)
+                {
+                    field = "Phase Demolished";
+                    RequireWritable(element.get_Parameter(BuiltInParameter.PHASE_DEMOLISHED), "Phase Demolished");
+                    element.DemolishedPhaseId = demolished;
+                }
+                field = "placement verification";
                 VerifyPlacement(element);
+                log("Insulation " + element.Id.Value + " matched original placement: " + Description());
+            }
+            catch (Autodesk.Revit.Exceptions.RegenerationFailedException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
                 throw new InvalidOperationException("Insulation " + element.Id.Value
-                    + ": cannot preserve original insulation placement (" + Description() + "). " + ex.Message, ex);
+                    + ": cannot preserve " + field + ". Expected [" + Description()
+                    + "]; actual before repair [" + before + "]. " + ex.Message, ex);
             }
         }
 
         private static void RequireWritable(Parameter parameter, string name)
         {
-            if (parameter == null || parameter.IsReadOnly)
-                throw new InvalidOperationException(name + " is missing or read-only");
+            if (parameter == null)
+                throw new InvalidOperationException(name + " parameter is missing");
+            if (parameter.IsReadOnly)
+                throw new InvalidOperationException(name + " parameter is read-only");
         }
 
         internal void VerifyPlacement(Element element)
         {
             if (!Matches(element))
                 throw new InvalidOperationException("Insulation " + element.Id.Value
-                    + ": placement differs from original insulation (" + Description() + ")");
+                    + ": placement differs from original insulation: " + Differences(element));
         }
     }
 }

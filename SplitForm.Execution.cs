@@ -96,6 +96,7 @@ namespace PipeSplitter2024
             SetRunning(true);
             try
             {
+                using (var batchWorkset = new ActiveWorksetScope(doc, detail => DiagnosticLog.Write("Batch Active Workset", detail)))
                 using (var group = new TransactionGroup(doc, "Pipe Splitter - " + (commit ? "Apply" : "Preview")))
                 {
                     if (group.Start() != TransactionStatus.Started) throw new InvalidOperationException("Cannot start transaction group.");

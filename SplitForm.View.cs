@@ -30,6 +30,7 @@ namespace PipeSplitter2024
 
         private void ConfigureGrid()
         {
+            InitializeColumnMenu();
             grid.Dock = WF.DockStyle.Fill;
             grid.ReadOnly = true;
             grid.AllowUserToAddRows = false;
@@ -56,33 +57,7 @@ namespace PipeSplitter2024
                 }
                 else if (e.Button == WF.MouseButtons.Right)
                 {
-                    var menu = new WF.ContextMenuStrip();
-                    menu.ShowItemToolTips = true;
-                    menu.Items.Add("Filter " + Header(column) + "...", null, delegate { if (!running) EditFilter(column); });
-                    menu.Items.Add("Clear this filter", null, delegate
-                    {
-                        if (running) return;
-                        filters.Remove(column);
-                        ApplyView();
-                    });
-                    menu.Items.Add("Sort ascending", null, delegate
-                    {
-                        if (running) return;
-                        sortColumn = column;
-                        descending = false;
-                        ApplyView();
-                    });
-                    menu.Items.Add("Sort descending", null, delegate
-                    {
-                        if (running) return;
-                        sortColumn = column;
-                        descending = true;
-                        ApplyView();
-                    });
-                    foreach (WF.ToolStripItem item in menu.Items)
-                        item.ToolTipText = item.Text + " for " + Header(column);
-                    menu.Closed += delegate { menu.Dispose(); };
-                    menu.Show(WF.Cursor.Position);
+                    ShowColumnMenu(column);
                 }
             };
             grid.CellFormatting += delegate(object sender, WF.DataGridViewCellFormattingEventArgs e)

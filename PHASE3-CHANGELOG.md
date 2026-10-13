@@ -1,3 +1,28 @@
+# Temporary original-insulation creation workset - 3.0.0.4
+
+- Added ActiveWorksetScope.cs. Capture the user's current active workset; validate the source insulation workset exists and is WorksetKind.UserWorkset; activate it before the first cut. Keep it active through union creation and missing-insulation creation. Do not guess/map invalid IDs or change the source pipe to the insulation's workset.
+- Restore before per-pipe commit, in finally for every attempt/retry/rollback, at Process exit, and after the TransactionGroup is disposed. Each restoration reads back and verifies the ID. Persistent failures surface to the batch error handler instead of continuing silently. Non-workshared documents skip this switch.
+- Keep final insulation matching/verification, pipe/union metadata, connections, measured takeout, compensation, preview snapshot and one-Undo behavior. Arithmetic unchanged. This is a creation-context change, not a relaxation of placement requirements.
+- Log before/target active workset IDs and target name, created/inherited insulation expected/actual placement even when equal, and restoration. Separate missing parameter from read-only errors.
+- Original insulation Workset 0 is checked through the same document table and kind rules. If not a valid user workset, its pipe fails before cutting with an explicit reason. No unsupported assignment is forced.
+- Full changed/new files: ActiveWorksetScope.cs, InsulationPlacement.cs, PipeSplitter.cs, SplitForm.Execution.cs, Build.ps1, AssemblyInfo.cs, README.md, PHASE3-CHANGELOG.md, PHASE3-MANUAL-TEST-PLAN.md, BUILD-RESULT.txt.
+- Build: C# 5, fixed PipeSplitter2024.dll, 0 errors/warnings. Existing Revit-free harness passes 1,106,656 assertions. No DLL/Revit execution. The harness does NOT validate active-workset API behavior or insulation inheritance.
+- Open risk: last audit's common resulting Workset 38547 suggested an active-workset creation effect; it did not prove the source. Actual inheritance, phase/workset mutability, restoration across commit/group rollback and cancellation must be verified in Revit. Read-only/ownership restrictions are not bypassed. Old unsupported-workset cases may still fail intentionally.
+
+---
+# Insulation repair and right-click menu - 3.0.0.3
+
+Evidence: user-supplied audit_20261013_100137 export reported 139 Preview insulation-placement failures, two worksharing failures and 63 successful committed Apply rows. Screenshot also reported ObjectDisposedException for ContextMenuStrip during header right-click.
+
+- PreserveInsulation now attempts placement matching on INHERITED insulation as well as newly created insulation. The ORIGINAL INSULATION baseline remains authoritative, even when different from the pipe's placement. Existing type/thickness guards, final regeneration and verification remain.
+- Matching fields are untouched. Demolition is temporarily cleared only when creation phase must change, avoiding an unnecessary clear/set when only demolition differs. Missing/read-only/setter failures still reject only the current pipe; no delete/recreate or ownership workaround.
+- Diagnostics log differing field names and expected/actual values before repair, successful matching, and the field being assigned on failure. Final mismatch reports show actual differences rather than only expected values. RegenerationFailedException is rethrown without further model inspection in the matching helper.
+- One persistent, form-owned ContextMenuStrip replaces per-click creation/disposal in Closed. Actions use BeginInvoke after closing so the menu framework can finish before opening a filter dialog or rebinding the grid. Disposal happens on form disposal, including correct reuse through Pick pipes. Queued actions guard running/disposed/hidden/pick-request states and report exceptions locally.
+- No changes to Planner, takeout/compensation, Verified set, per-pipe transactions, preview rollback or one-Undo Apply. Ownership failures remain outside this fix.
+- C# 5 build: zero errors/warnings. Standalone harness: 1,106,656 assertions passed. No Revit or WinForms execution; fixes are NOT runtime-verified and the 139 failures are not claimed resolved yet.
+- Complete changed/new files: InsulationPlacement.cs, PipeSplitter.cs, SplitForm.ColumnMenu.cs, SplitForm.View.cs, Build.ps1, AssemblyInfo.cs, README.md, PHASE3-CHANGELOG.md, PHASE3-MANUAL-TEST-PLAN.md and BUILD-RESULT.txt.
+
+---
 # Active-view pipe selection - 3.0.0.2
 
 - Added Scope > Select pipes in active view and Scan scope > Pipes in active view. The button updates Revit selection without closing or zooming the view, then requests Scan.

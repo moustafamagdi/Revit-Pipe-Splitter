@@ -1,10 +1,12 @@
-Active-view pipe selection - 3.0.0.2
-Build: SUCCESS. Fixed output PipeSplitter2024.dll overwritten.
+Temporary original-insulation creation workset - 3.0.0.4
+Build: SUCCESS. Fixed PipeSplitter2024.dll overwritten in repository.
 Compiler: C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
-Language: /langversion:5; x64; Revit 2024 API references.
+Language: /langversion:5; x64; installed Revit 2024 API references.
 Compiler errors: 0. Compiler warnings: 0.
-Standalone harness: PASS, 1106656 assertions, including new scan-scope persistence/legacy-default checks.
-No Revit assemblies loaded by harness. No DLL execution in Revit.
-Core split/compensation algorithm unchanged.
-View collection, selection/insulation host mapping, hide/isolate, crop/section-box and DPI behavior NEED MANUAL VERIFICATION.
-See PHASE3-MANUAL-TEST-PLAN.md for priority active-view tests and earlier regression checks.
+Standalone harness: PASS, 1106656 assertions (existing arithmetic, settings, file and UI-policy checks).
+No Revit assemblies loaded by harness. No Revit/WinForms execution.
+The harness does NOT test active-workset switching, restoration or actual insulation inheritance.
+Static inspection: switch before cutting; restore before commit, in per-attempt finally, per-pipe exit and after group disposal; validate target existence/UserWorkset; strict metadata verification retained.
+Installed RevitAPI.xml checked for WorksetTable.GetWorkset, GetActiveWorksetId, SetActiveWorksetId and Workset.Kind.
+Required manual checks: previously failing pipes, invalid/non-user worksets including 0, mixed targets, restoration on success/retry/rollback/cancel/Undo, and unchanged pipe/union placement.
+See PHASE3-MANUAL-TEST-PLAN.md. No claim of runtime resolution yet.

@@ -150,17 +150,22 @@ namespace PipeSplitter2024 {
    if(insulation==null) throw new Exception("Insulation: cannot read original pipe insulation");
    return new InsulationSpec {TypeId=insulation.GetTypeId(),Thickness=insulation.Thickness,Placement=InsulationPlacement.Capture(insulation)};
   }
-  static void PreserveInsulation(Document d, IList<ElementId> pipeIds, InsulationSpec original, ModelTolerance tolerance) {
+  static void PreserveInsulation(Document d, IList<ElementId> pipeIds, InsulationSpec original, ModelTolerance tolerance, Action<string> log) {
    foreach(var pipeId in pipeIds) {
     var current=ReadInsulation(d,pipeId);
     // BreakCurve can propagate insulation. Keep it when present and only create missing hosts.
     if(original!=null && current==null) {
      var created = PipeInsulation.Create(d, pipeId, original.TypeId, original.Thickness);
-     original.Placement.MatchPlacement(created);
+     original.Placement.MatchPlacement(created, log);
     } else if(original==null && current!=null) {
      throw new Exception("Insulation: unexpected insulation appeared on an uninsulated pipe");
     } else if(original!=null && (current.TypeId!=original.TypeId || Math.Abs(current.Thickness-original.Thickness)>tolerance.LengthFeet)) {
      throw new Exception("Insulation: inherited type or thickness differs from the original");
+    }
+    if (original != null && current != null)
+    {
+     foreach (ElementId insulationId in InsulationLiningBase.GetInsulationIds(d, pipeId))
+         original.Placement.MatchPlacement(d.GetElement(insulationId), log);
     }
    }
    d.Regenerate();
@@ -174,6 +179,12 @@ namespace PipeSplitter2024 {
   }
   // Each pipe is atomic. Failed union placement or failed validation rolls back all of its cuts.
   internal static bool Process(Document d, Row r, double max, double min, bool strict, Dictionary<string,TakeoutMeasurement> cache, bool useVerifiedPlan, out string error) {
+   using (var activeWorkset = new ActiveWorksetScope(d, r.AddLog))
+   {
+    return ProcessWithWorkset(d, r, max, min, strict, cache, useVerifiedPlan, activeWorkset, out error);
+   }
+  }
+  private static bool ProcessWithWorkset(Document d, Row r, double max, double min, bool strict, Dictionary<string,TakeoutMeasurement> cache, bool useVerifiedPlan, ActiveWorksetScope activeWorkset, out string error) {
    error="";
    r.ResultPipeIds.Clear();r.ResultUnionIds.Clear();r.Warnings.Clear();
    try {
@@ -214,6 +225,8 @@ namespace PipeSplitter2024 {
           r.AddLog("Original insulation differs from host placement; preserving insulation baseline: " + insulation.Placement.Description());
       var endpoints=Ends(original); var own=new HashSet<long>{r.Id};
       var references=endpoints.Select(c=>ExternalRefs(c,own)).ToList();var origins=endpoints.Select(c=>c.Origin).ToList();
+      if (insulation != null)
+          activeWorkset.UseInsulationWorkset(insulation.Placement.WorksetValue);
       tx.Start();tx.SetFailureHandlingOptions(tx.GetFailureHandlingOptions().SetFailuresPreprocessor(handler).SetClearAfterRollback(true).SetForcedModalHandling(true));
       var ids=new List<ElementId>{original.Id}; var joins=new List<XYZ>();var unionIds=new List<ElementId>();double distance=0;
       for(int i=0;i<plans.Count-1;i++) {
@@ -258,7 +271,7 @@ namespace PipeSplitter2024 {
        plans=corrected;continue;
       }
       if(actual.Min()<min-finishedTolerance || actual.Max()>max+finishedTolerance) throw new Exception("Finished pipe lengths are outside the specified limits");
-      PreserveInsulation(d,ids,insulation,tolerance);
+      PreserveInsulation(d,ids,insulation,tolerance,r.AddLog);
       foreach(var piece in pieces) metadata.VerifyPipe(piece,tolerance);
       foreach(var unionId in unionIds) {
        var fitting=(FamilyInstance)d.GetElement(unionId);metadata.VerifyPlacement(fitting);
@@ -273,6 +286,7 @@ namespace PipeSplitter2024 {
        if(end==null || !ExternalRefs(end,own).SequenceEqual(references[k])) throw new Exception("Original end connection changed during final regeneration");
       }
       var measurement=TakeoutMeasurement.Measure(plans,actual,routingPart.Value,finishedTolerance);
+      activeWorkset.Restore();
       var status=tx.Commit();
       if(status!=TransactionStatus.Committed) throw new Exception("Revit rolled back: "+handler.Detail);
       if(measurement!=null) {cache[cacheKey]=measurement;r.AddLog("Measured takeout cached for pipe type/size; attempts: "+(attempt+1));}
@@ -289,6 +303,11 @@ namespace PipeSplitter2024 {
        cache.Remove(cacheKey);cacheSeeded=false;plans=Planner.Split(r.Length_m,max,min,r.Placement);r.AddLog("Cached trial rolled back; retrying without cache.");continue;
       }
       error=ex.Message;return false;
+     }
+     finally
+     {
+      // Includes every correction retry, failed trial and successful commit.
+      activeWorkset.Restore();
      }
     }
    }

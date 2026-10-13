@@ -1,6 +1,6 @@
 # Revit Pipe Splitter
 
-Revit 2024 add-in that splits straight pipes to a **Max finished length** after unions, respects a **Min piece length**, and preserves insulation. Current assembly version: **3.0.0.2**. Command: `PipeSplitter2024.Command`.
+Revit 2024 add-in that splits straight pipes to a **Max finished length** after unions, respects a **Min piece length**, and preserves insulation. Current assembly version: **3.0.0.4**. Command: `PipeSplitter2024.Command`.
 
 ## Build and use
 
@@ -20,7 +20,7 @@ Lengths are actual Revit pipe curve lengths in metres. Full pieces reach Max fin
 
 End / Start follow the stored curve direction, not flow direction. Balanced equalizes end pieces where feasible. Preview measures family-dependent takeout and retains FinishedTargets/CompensateCuts, with at most eight attempts per pipe. Apply first uses the saved final Preview cuts; failed seeds fall back to the guarded measured cache/iterative path. Every pipe still receives all final connection, metadata, length and insulation checks. The cache is cleared on Scan.
 
-Each pipe is atomic. Preview rolls back its TransactionGroup. Successful Apply changes are assimilated into one Undo step. Strict mode OFF logs/dismisses warnings; ON also rejects warning-producing pipes. New pipe pieces/unions retain source pipe workset and phases. **Insulation uses its ORIGINAL insulation workset and phases**, even when they differ from the host pipe. That difference is logged; new insulation is matched and inherited insulation verified against the insulation baseline. Read-only/mismatched placement rejects only that pipe. Type/thickness checks remain. All of these Revit behaviors need manual verification.
+Each pipe is atomic. Preview rolls back its TransactionGroup. Successful Apply changes are assimilated into one Undo step. Strict mode OFF logs/dismisses warnings; ON also rejects warning-producing pipes. New pipe pieces/unions retain source pipe workset and phases. **Insulation uses its ORIGINAL insulation workset and phases**, even when they differ from the host pipe. That difference is logged; new and inherited insulation are matched to the original insulation baseline, then verified after regeneration. Read-only/mismatched placement rejects only that pipe. Type/thickness checks remain. All of these Revit behaviors need manual verification.
 
 ## Verified set, filters and status
 
@@ -70,3 +70,13 @@ Pick pipes now returns from ShowDialog before calling Revit selection, then reop
 Scope > Select pipes in active view selects the host pipes returned for the currently active Revit view and changes Scan scope to Pipes in active view. Click Scan next, then Preview/Apply as usual. You can also choose Pipes in active view directly from Scan scope. Scan collects the active view afresh; it does not reuse manual picks. Insulation hits resolve to host pipes and are deduplicated. No linked pipes, fittings or FlexPipe are included. An empty view stays an empty scope; it never falls back to the whole model. The scan-scope preference is saved; Preview scope still always starts Visible rows.
 
 Visibility follows Revit's view-scoped FilteredElementCollector, not screen pixels or the current zoom rectangle. Per Autodesk's installed API documentation, occluded pipes and some elements outside crop boundaries can still be returned. Check crop/section-box, temporary hide/isolate, phase and filter behavior manually in your views before applying. Unsupported views report an error. No geometry/splitting algorithm change; no Revit execution by the assistant.
+## Insulation and column-menu fixes (3.0.0.3)
+
+Inherited insulation with the correct type/thickness now receives an attempt to restore the ORIGINAL insulation's workset/phases before final verification. Matching values are left alone; no insulation is deleted/recreated to bypass ownership or read-only parameters. Logs identify expected/actual differences, repair attempts and successful matches. Unrepairable placement still rolls back only that pipe. Worksharing ownership conflicts still require the owner/Revit workflow; they are not bypassed.
+
+Column-header right-click now uses one ContextMenuStrip owned by the form, disposed only with the form. Filter/sort actions are deferred until the menu click/close stack unwinds, avoiding the reported disposed-menu re-entry. Filter/sort and Verified-set semantics are unchanged. Both fixes need user verification inside Revit; compilation and the standalone arithmetic harness do not test them.
+## Temporary creation workset (3.0.0.4)
+
+Before splitting an insulated pipe in a workshared document, the tool validates the ORIGINAL insulation workset against the document workset table and requires a UserWorkset. It temporarily activates it before BreakCurve, union creation and any PipeInsulation.Create. Pipe/union placement is still matched to the original PIPE metadata; insulation remains checked against original INSULATION metadata. This tests the observed possibility that inherited insulation is using the active creation workset; success is not guaranteed without Revit verification.
+
+The previous active workset is restored before committing each pipe and checked/restored in finally after every attempt, at per-pipe exit and after the transaction group ends (including Preview rollback/cancellation). Persistent restoration errors are raised, not ignored. Missing/non-user workset IDs, including 0 if it does not identify a valid user workset, fail clearly instead of substituting the host workset. Non-workshared documents skip active-workset switching. Diagnostics include active/target workset IDs and target name, actual/expected insulation placement, restoration and separate missing versus read-only parameter errors.

@@ -1,3 +1,32 @@
+# Active Workset creation-context test (3.0.0.4)
+
+All NEEDS MANUAL VERIFICATION. No Revit execution occurred.
+
+1. Note the user's Active Workset, then Preview a few previously failing pipes whose insulation has a valid user workset (e.g. 38548). Logs must show activation of the original insulation workset before the cuts, the resulting insulation actual/expected placement, and restoration of the original user choice.
+2. Check every resulting inherited/created insulation workset, type, thickness and phase. If active-workset switching is not the source of the observed behavior, failure must remain with explicit actual/expected diagnostics, not be accepted silently.
+3. Source pipe workset differs from insulation workset: pipe pieces/unions must retain PIPE placement; insulation retains INSULATION placement. Uninsulated pipes and non-workshared documents remain unaffected.
+4. Original insulation Workset 0, missing ID or non-user workset: verify existence/kind checks and clear failure before cutting. No guess, host-workset substitution or deletion of insulation.
+5. Restore user Active Workset after successful Preview, successful Apply, each compensation retry, family/placement/ownership failure, Preview Cancel, both Apply Cancel choices and whole-batch rollback. Check again after one Undo. If already on target, no unnecessary switch.
+6. Mixed batch with several different valid original insulation worksets: each pipe uses its own target; the next pipe and final user setting must not inherit the previous temporary choice. Check ordinary full-length/connection/phase metadata regression.
+7. Failed active-workset activation must leave the pipe unchanged; a restoration failure must be reported, never silently treated as success. Existing per-pipe and group transaction guarantees still require verification.
+8. Read-only versus missing Workset errors must now be distinguishable. Keep the newly captured row log if the attempt still fails. Confirm version 3.0.0.4 and recheck header right-click/Pick pipes/active-view selection.
+
+---
+# Insulation + header-menu fix - priority manual checks (3.0.0.3)
+
+All NEEDS MANUAL VERIFICATION. The assistant did not execute the DLL in Revit or launch its WinForms UI.
+
+1. Preview a small selection of previously failing source pipes (e.g. 27956548 and 27956558 if still present). Inspect Matching insulation messages with expected/actual values, then matched-original messages. Either successful Preview with final checks, or a clear field-specific failure is expected; no blanket success is assumed.
+2. Test inherited insulation, missing insulation requiring Create, and original insulation with a different workset/phase from its host. All resulting insulation must retain original INSULATION placement, type and thickness. Pipes/unions retain PIPE placement.
+3. Test already-correct read-only parameters: no write should be attempted. A differing read-only/ownership-blocked parameter must fail only its pipe and report field + expected/actual-before values. A failed repair must leave no partial pipes/unions/placement edits after rollback.
+4. Test creation-phase changes with existing demolition, demolition-only changes and no phase changes. Verify legal phase order after regeneration; mismatch after regeneration must still reject the pipe.
+5. Apply successful Preview rows, inspect finished lengths, connections and metadata, then Undo once. Repeat Preview cancellation/Apply rollback to confirm repairs are within the same atomic transactions.
+6. Right-click every header repeatedly. Test Escape, outside-click dismissal, switching columns rapidly, scrolling and resizing. No disposed ContextMenuStrip errors.
+7. Use Filter (Apply/Clear/Cancel), Clear this filter, Sort ascending/descending on numeric/text/Warnings columns. Each action must target the clicked column; underlying filter/Verified-set behavior unchanged.
+8. Right-click then Pick pipes/Finish/Esc, return and right-click again. Also close the main form after menu use and during pending queued actions. No orphan/disposed-menu exception or unwanted action on a hidden form. All actions remain blocked during Preview/Apply.
+9. Confirm title/log/audit version 3.0.0.3. If a pipe still fails, provide the new row log: the actual-before/expected placement and field name now distinguish read-only/ownership/phase issues. Worksharing failures still need the owner to resolve ownership as Revit directs.
+
+---
 # Active-view selection - priority manual checks (3.0.0.2)
 
 All NEEDS MANUAL VERIFICATION; no Revit execution occurred.
