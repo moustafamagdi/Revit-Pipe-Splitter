@@ -183,7 +183,7 @@ namespace PipeSplitter2024 {
   WF.Label filterInfo=new WF.Label();
   sealed class ColumnFilter {public string Operator; public string Text; public decimal Number;}
   public SplitForm(UIDocument uidoc) {
-   ui=uidoc;doc=ui.Document;Text="Pipe Splitter v1.3 | Revit 2024 | Finished Length After Unions";Width=1250;Height=820;MinimumSize=new Size(950,650);StartPosition=WF.FormStartPosition.CenterParent;Font=new Font("Segoe UI",10);BackColor=Color.FromArgb(244,247,250);
+   ui=uidoc;doc=ui.Document;Text="Pipe Splitter | Revit 2024 | Finished Length After Unions";Width=1250;Height=820;MinimumSize=new Size(950,650);StartPosition=WF.FormStartPosition.CenterParent;Font=new Font("Segoe UI",10);BackColor=Color.FromArgb(244,247,250);
    var layout=new WF.TableLayoutPanel {Dock=WF.DockStyle.Fill,RowCount=6,ColumnCount=1,Padding=new WF.Padding(16)};
    layout.RowStyles.Add(new WF.RowStyle(WF.SizeType.Absolute,85));layout.RowStyles.Add(new WF.RowStyle(WF.SizeType.Absolute,65));layout.RowStyles.Add(new WF.RowStyle(WF.SizeType.Absolute,85));layout.RowStyles.Add(new WF.RowStyle(WF.SizeType.Absolute,65));layout.RowStyles.Add(new WF.RowStyle(WF.SizeType.Percent,100));layout.RowStyles.Add(new WF.RowStyle(WF.SizeType.Absolute,65));Controls.Add(layout);
    note.Text="Target length is the FINISHED pipe length AFTER unions (e.g. 6.000 m). Insulation is preserved.\nFull pieces meet the target; remainder pieces are redistributed to respect the minimum. All lengths are in metres.\nPreview measures union takeout and rolls back. Apply uses the compensated cut positions.";note.Dock=WF.DockStyle.Fill;note.Font=new Font(Font,FontStyle.Bold);layout.Controls.Add(note,0,0);

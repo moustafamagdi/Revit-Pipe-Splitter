@@ -1,8 +1,8 @@
-# Revit Pipe Splitter
+﻿# Revit Pipe Splitter
 
 Revit 2024 add-in for splitting straight pipes into finished lengths, adding unions from Routing Preferences, and preserving pipe insulation type and thickness.
 
-Current version: **1.3.0**. Command: `PipeSplitter2024.Command`.
+Command: `PipeSplitter2024.Command`.
 
 ## Features
 
@@ -22,13 +22,13 @@ Requirements: Windows, Revit 2024 installed at `C:\Program Files\Autodesk\Revit 
 .\Build.ps1
 ```
 
-Output: `PipeSplitter2024_v1_3.dll` beside the source files. Autodesk assemblies are referenced from the local installation and are not distributed.
+Output: `PipeSplitter2024.dll` beside the source files. Autodesk assemblies are referenced from the local installation and are not distributed.
 
 ## Run
 
 1. Open an editable Revit project (not the Family Editor).
-2. In Add-In Manager (Manual), load `PipeSplitter2024_v1_3.dll`.
-3. Run `PipeSplitter2024.Command`. Confirm the window title shows v1.3.
+2. In Add-In Manager (Manual), load `PipeSplitter2024.dll`.
+3. Run `PipeSplitter2024.Command`.
 4. Set finished target and minimum lengths, then select the scan scope.
 5. Run Scan, Preview, and Apply in order.
 
@@ -71,3 +71,7 @@ Version 1.3 was compiled against the local Revit 2024 API. Standalone arithmetic
 - `Install.ps1`: optional per-user add-in registration.
 
 Generated DLLs and build artifacts are ignored by Git.
+
+## Development workflow
+
+This repository is the source of truth for all future changes. Build.ps1 overwrites the single output PipeSplitter2024.dll. Do not create version-suffixed DLLs or release folders. If Revit locks the file, close Revit and rebuild with the same filename. The assistant must not run or test the DLL inside Revit unless the user changes that instruction.

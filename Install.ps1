@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = 'Stop'
 $targetFolder = Join-Path $env:APPDATA 'Autodesk\Revit\Addins\2024'
-$assemblyPath = Join-Path $PSScriptRoot 'PipeSplitter2024_v1_3.dll'
+$assemblyPath = Join-Path $PSScriptRoot 'PipeSplitter2024.dll'
 if (!(Test-Path -LiteralPath $assemblyPath)) { throw 'DLL not found beside installer.' }
 New-Item -ItemType Directory -Force -Path $targetFolder | Out-Null
 $escapedPath = [System.Security.SecurityElement]::Escape($assemblyPath)
