@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -18,14 +18,16 @@ namespace PipeSplitter2024
     internal sealed class AuditRecord
     {
         internal string Batch, Operation, Scope, Outcome, Time, Document;
+        internal string ToolVersion,RevitVersion,WindowsUser,DocumentPath,SessionId;
         internal long OriginalId;
         internal string Type, System, Rule, Placement, Status, Warnings, Log;
         internal double Diameter, Maximum, Minimum, Before;
         internal List<double> After;
         internal List<long> ResultPipes, CreatedPipes, Unions;
-        internal static AuditRecord Capture(Row row, string batch, string operation, string scope, string document, bool success)
+        internal static AuditRecord Capture(Row row, string batch, string operation, string scope, string document, bool success, SessionInfo session)
         {
             return new AuditRecord {
+                ToolVersion=SessionInfo.ToolVersion,RevitVersion=session.RevitVersion,WindowsUser=session.WindowsUser,DocumentPath=session.DocumentPath,SessionId=session.Id,
                 Batch=batch, Operation=operation, Scope=scope, Outcome=success?"Pending group result":"Failed - unchanged",
                 Time=DateTime.UtcNow.ToString("o",CultureInfo.InvariantCulture), Document=document, OriginalId=row.Id,
                 Type=row.Type, System=row.SystemType, Rule=row.Rule, Placement=row.Placement.ToString(), Status=row.Status,
@@ -55,12 +57,17 @@ namespace PipeSplitter2024
             if (value is string && text.Length>0 && ("=+-@\t\r\n".IndexOf(text[0])>=0)) text="'"+text;
             return "\""+text.Replace("\"","\"\"")+"\"";
         }
+        internal const string Header="SessionId,ToolVersion,RevitVersion,WindowsUser,DocumentPath,BatchId,UTC,Document,Operation,ExecutionScope,Outcome,OriginalElementId,ResultPipeIds,CreatedPipeIds,UnionIds,PipeType,SystemType,Diameter_mm,Rule,MaxFinished_m,Minimum_m,RemainderPlacement,BeforeLength_m,AfterLengths_m,Status,Warnings,Log";
+        internal static IEnumerable<string> Lines(IEnumerable<AuditRecord> records)
+        {
+            foreach(var record in records)
+                yield return string.Join(",",new object[]{record.SessionId,record.ToolVersion,record.RevitVersion,record.WindowsUser,record.DocumentPath,record.Batch,record.Time,record.Document,record.Operation,record.Scope,record.Outcome,record.OriginalId,string.Join(";",record.ResultPipes),string.Join(";",record.CreatedPipes),string.Join(";",record.Unions),record.Type,record.System,record.Diameter,record.Rule,record.Maximum,record.Minimum,record.Placement,record.Before,string.Join(";",record.After.Select(v=>v.ToString("R",CultureInfo.InvariantCulture))),record.Status,record.Warnings,record.Log}.Select(Cell));
+        }
         internal static void Write(string path,IEnumerable<AuditRecord> records)
         {
-            var lines=new List<string>{"BatchId,UTC,Document,Operation,ExecutionScope,Outcome,OriginalElementId,ResultPipeIds,CreatedPipeIds,UnionIds,PipeType,SystemType,Diameter_mm,Rule,MaxFinished_m,Minimum_m,RemainderPlacement,BeforeLength_m,AfterLengths_m,Status,Warnings,Log"};
-            foreach(var record in records)
-                lines.Add(string.Join(",",new object[]{record.Batch,record.Time,record.Document,record.Operation,record.Scope,record.Outcome,record.OriginalId,string.Join(";",record.ResultPipes),string.Join(";",record.CreatedPipes),string.Join(";",record.Unions),record.Type,record.System,record.Diameter,record.Rule,record.Maximum,record.Minimum,record.Placement,record.Before,string.Join(";",record.After.Select(v=>v.ToString("R",CultureInfo.InvariantCulture))),record.Status,record.Warnings,record.Log}.Select(Cell)));
-            File.WriteAllLines(path,lines,new UTF8Encoding(true));
+            using(var stream=new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.Read))
+            using(var writer=new StreamWriter(stream,new UTF8Encoding(true)))
+                foreach(string line in new[]{Header}.Concat(Lines(records))) writer.WriteLine(line);
         }
     }
 }

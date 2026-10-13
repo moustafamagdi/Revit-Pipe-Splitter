@@ -1,8 +1,8 @@
-﻿# Revit Pipe Splitter
+# Revit Pipe Splitter
 
 Revit 2024 add-in for splitting straight pipes into finished lengths, adding unions from Routing Preferences, and preserving pipe insulation type and thickness.
 
-Command: `PipeSplitter2024.Command`.
+Version: **2.0.0.0**. Command: `PipeSplitter2024.Command`.
 
 ## Features
 
@@ -31,13 +31,13 @@ Output: `PipeSplitter2024.dll` beside the source files. Autodesk assemblies are 
 2. In Add-In Manager (Manual), load `PipeSplitter2024.dll`.
 3. Run `PipeSplitter2024.Command`.
 4. Set target/minimum, remainder placement, scan scope and Apply to. Use Pick pipes in Revit if needed.
-5. Run Scan, inspect effective rule limits, then Preview and Apply. Apply requires every eligible row in the current execution scope to have passed Preview.
+5. Run Scan, inspect effective rule limits, then Preview and Apply. Apply uses exactly the successfully verified Preview set, including rows hidden by later filters. Adding eligible rows or changing settings/rules requires a new Preview (and Scan after settings/rule changes).
 
 For optional persistent installation, keep this repository folder in a stable location and run `Install.ps1`. Restart Revit and choose Add-Ins > External Tools > Pipe Splitter. The script registers this DLL path in the current user's Revit 2024 add-ins directory.
 
 ## Lengths and preview
 
-Lengths are actual Revit pipe curve lengths in metres. Preview creates pipe segments and unions in temporary transactions, measures the resulting geometry, compensates cut positions, verifies constraints, and rolls back the trial. It can attempt compensation up to eight times per pipe. A dialog-local cache of measured takeout per pipe type/size seeds subsequent pipes and Apply; every pipe is verified again, and a wrong cache estimate falls back to iterative compensation. The cache is cleared on a new Scan. These Revit behaviors need manual verification.
+Lengths are actual Revit pipe curve lengths in metres. Preview creates pipe segments and unions in temporary transactions, measures the resulting geometry, compensates cut positions, verifies constraints, and rolls back the trial. It can attempt compensation up to eight times per pipe. Apply first tries each saved final verified Preview cut plan. If it fails, the guarded cache/iterative path is used; errors from failure processing and regeneration failures remain fatal for that pipe. A dialog-local cache of measured takeout per pipe type/size seeds subsequent trials; every pipe is verified again, and a wrong cache estimate falls back to iterative compensation. The cache is cleared on a new Scan. These Revit behaviors need manual verification.
 
 Full pieces target the specified finished length. Remainder pieces may be shorter to respect the minimum. The sum of finished pipe lengths may be less than the original route length because unions occupy part of the route. No separate stock, weld-gap, or insertion-depth allowance is calculated beyond the union family's actual Revit geometry.
 
@@ -47,7 +47,7 @@ Preview can be slow on large models and runs synchronously. Use Selected pipes o
 
 Click a column header to toggle sorting; right-click to set its filter. Multiple column filters are combined with AND. Text matching ignores case. Numeric length filtering uses the three decimal places shown in the table. CSV export follows the visible rows and sort order.
 
-**Apply to defaults to Visible rows for fresh settings. Preview and Apply process only eligible rows in that scope; All eligible is an explicit alternative. Confirmation states the exact count. Summary totals still cover the whole scan.**
+**Apply to always starts on Visible rows and is never persisted. Preview processes eligible rows in the chosen scope. Apply uses the fixed successful Preview ID set shown as Verified set: N pipes, even if later filters hide some. Including eligible IDs outside the requested Preview scope invalidates that set. Confirmation states the exact count. Summary totals cover the whole scan and include warnings.**
 
 ## Scope and limitations
 
@@ -84,7 +84,7 @@ Phase 1 is retained and Phase 2 is now implemented. Phase 3 and Phase 4 require 
 - See PHASE1-CHANGELOG.md for each behavior change and its reason.
 - See MANUAL-TEST-PLAN.md: every Revit API behavior is **needs manual verification**.
 - Phase1Support.cs contains focused correctness helpers; the Phase 4 file restructuring is deferred.
-- Row logs include callback warnings and exception details. The append-only diagnostic file is `%APPDATA%\PipeSplitter\log.txt`.
+- Row logs include callback warnings and exception details. The diagnostic file rotates at approximately 5 MB, retaining one log.txt.bak backup. The current file is `%APPDATA%\PipeSplitter\log.txt`.
 - Routing Preferences are prechecked by pipe type/diameter before splitting. A matching rule does not prove that a family can be placed.
 - New unions and pieces receive the original workset and creation/demolition phases. Final validation compares pipe type, system type, reference level, diameter, phases, workset and insulation.
 - Point coincidence uses Application.VertexTolerance. Scalar length tolerance is Application.ShortCurveTolerance / 100 (converted to metres as needed). This is an explicit acceptance policy needing manual verification, not a minimum creation distance. Planned pieces must exceed ShortCurveTolerance; input minimum remains greater than twice ShortCurveTolerance.
@@ -105,6 +105,15 @@ A successful build or console harness does not establish Revit correctness. Cach
 - rules.example.json contains disabled examples. Open rules JSON in the UI and adapt them to actual model names.
 - Phase2Settings.cs provides validated .NET JSON persistence; Phase2Support.cs provides picking/audit helpers; Phase2Form.cs extends the form with Phase 2 controls. Phase 4 restructuring is still deferred.
 - Test-Planner.ps1 exercises pure Planner/rule/settings code without referencing Revit, and writes only into its test output folder.
-- Export audit CSV includes all attempts in this dialog. APPDATA/PipeSplitter/audit.csv is also saved after each batch; Preview IDs are omitted because they no longer exist after rollback.
+- Export audit CSV includes all attempts in this dialog. A unique APPDATA/PipeSplitter/audit_yyyyMMdd_HHmmss.csv is created for each dialog session with operations and appended after each batch (collision suffix if needed); Preview IDs are omitted because they no longer exist after rollback.
 
 DLL name remains PipeSplitter2024.dll. The assistant has not run it in Revit. UI responsiveness/cancellation/DPI work remains Phase 3.
+## Phase 2 review fixes (2.0.0.0)
+
+See PHASE2-CHANGELOG.md and PHASE2-MANUAL-TEST-PLAN.md for the review fixes and required checks. No Phase 3 layout redesign was performed.
+
+Unknown rule fields now block loading with the field and rule name; shadowed rules produce warnings. Export scan combinations provides exact selector names and sizes. Insert example rule adds a disabled template only to an empty list.
+
+New insulation receives the source pipe workset/phases; all inherited insulation is verified against them. Any mismatch rejects the pipe. Select in Revit also zooms; the dialog closes and you must Scan again when reopening. These API behaviors need manual verification.
+
+Each log session and every audit row includes tool version, Revit version/build, Windows user and document path. Audit files are never overwritten, including explicit exports (choose a new filename). TakeoutMeasurement.cs, PreviewSnapshot.cs, SessionFiles.cs and SessionInfo.cs are Revit-free helpers covered by the standalone harness.

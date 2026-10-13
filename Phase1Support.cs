@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -10,18 +10,28 @@ namespace PipeSplitter2024
 {
     internal static class DiagnosticLog
     {
+        private static readonly object Gate=new object();
+        private static string sessionHeader="";
         internal static string LastWriteError = "";
         internal static readonly string PathName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PipeSplitter", "log.txt");
         internal static void Write(string context, string detail)
         {
+            lock(Gate)
+            {
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(PathName));
+                if(SessionFiles.RotateLog(PathName,5L*1024*1024))
+                {
+                    File.AppendAllText(PathName,"Log rotated; "+sessionHeader+Environment.NewLine);
+                }
                 File.AppendAllText(PathName, DateTime.Now.ToString("o", CultureInfo.InvariantCulture) + " | " + context + Environment.NewLine + detail + Environment.NewLine);
                 LastWriteError = "";
             }
             catch (Exception ex) { LastWriteError = "Cannot write diagnostic log: " + ex.Message; }
+            }
         }
+        internal static void BeginSession(SessionInfo session) {sessionHeader=session.Header();Write("Session start",sessionHeader);}
         internal static void Error(string context, Exception ex) { Write(context, ex.ToString()); }
     }
 
@@ -108,29 +118,6 @@ namespace PipeSplitter2024
                 if (id == ElementId.InvalidElementId || !(doc.GetElement(id) is FamilySymbol)) throw new InvalidOperationException("No union defined for " + description);
                 return id;
             }
-        }
-    }
-
-    // Cache only numeric measurements; never retain temporary Revit elements after preview rollback.
-    internal sealed class TakeoutMeasurement
-    {
-        internal long RoutingPart;
-        internal double StartLoss, EndLoss;
-        internal static TakeoutMeasurement Measure(List<double> cuts, List<double> actual, long part, double tolerance)
-        {
-            if (cuts.Count < 2 || cuts.Count != actual.Count) return null;
-            double first = cuts[0] - actual[0], last = cuts[cuts.Count - 1] - actual[actual.Count - 1];
-            if (first < -tolerance || last < -tolerance) return null;
-            first = Math.Max(0, first); last = Math.Max(0, last);
-            for (int i = 1; i < cuts.Count - 1; i++)
-                if (Math.Abs(cuts[i] - actual[i] - first - last) > tolerance) return null;
-            return new TakeoutMeasurement { RoutingPart = part, StartLoss = first, EndLoss = last };
-        }
-        internal List<double> Seed(double length, int count, double max, double min, RemainderPlacement placement)
-        {
-            List<double> targets = Planner.FinishedTargets(length - (count - 1) * (StartLoss + EndLoss), count, max, min, placement);
-            for (int i = 0; i < count; i++) targets[i] += (i == 0 ? StartLoss : (i == count - 1 ? EndLoss : StartLoss + EndLoss));
-            return targets;
         }
     }
 

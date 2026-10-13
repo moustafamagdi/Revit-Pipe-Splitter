@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
+using System.Xml;
+using System.Linq;
 
 namespace PipeSplitter2024
 {
@@ -14,7 +16,6 @@ namespace PipeSplitter2024
         [DataMember] public string Remainder { get; set; }
         [DataMember] public bool Strict { get; set; }
         [DataMember] public bool SelectedOnly { get; set; }
-        [DataMember] public bool AllEligible { get; set; }
         [DataMember] public int WindowWidth { get; set; }
         [DataMember] public int WindowHeight { get; set; }
         [DataMember] public bool Maximized { get; set; }
@@ -35,8 +36,9 @@ namespace PipeSplitter2024
         }
     }
     [DataContract]
-    public sealed class PipeRule
+    public sealed class PipeRule : IExtensibleDataObject
     {
+        public ExtensionDataObject ExtensionData { get; set; }
         [DataMember(IsRequired = true)] public string Name { get; set; }
         [DataMember] public bool Enabled { get; set; }
         [DataMember] public string PipeType { get; set; }
@@ -48,13 +50,15 @@ namespace PipeSplitter2024
         [OnDeserializing] private void BeforeRead(StreamingContext context) { Enabled = true; }
     }
     [DataContract]
-    public sealed class RuleFile
+    public sealed class RuleFile : IExtensibleDataObject
     {
+        public ExtensionDataObject ExtensionData { get; set; }
         [DataMember(IsRequired = true)] public int SchemaVersion { get; set; }
         [DataMember(IsRequired = true)] public List<PipeRule> Rules { get; set; }
         public RuleFile() { SchemaVersion = 1; Rules = new List<PipeRule>(); }
         public void Validate()
         {
+            SettingsStore.CheckExtensionData(this);
             if (SchemaVersion != 1 || Rules == null) throw new ArgumentException("Rules file requires SchemaVersion 1 and a Rules array");
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (PipeRule rule in Rules)
@@ -69,6 +73,24 @@ namespace PipeSplitter2024
                     if (rule.MinimumM.Value > rule.MaximumM) throw new ArgumentException("MinimumM exceeds MaximumM in " + rule.Name);
                 }
             }
+        }
+        public List<string> ShadowWarnings()
+        {
+            var warnings=new List<string>();
+            for(int i=0;i<Rules.Count;i++)
+            {
+                PipeRule later=Rules[i];if(!later.Enabled) continue;
+                for(int j=0;j<i;j++)
+                {
+                    PipeRule earlier=Rules[j];if(!earlier.Enabled) continue;
+                    bool type=string.IsNullOrWhiteSpace(earlier.PipeType) || string.Equals(earlier.PipeType,later.PipeType,StringComparison.OrdinalIgnoreCase);
+                    bool system=string.IsNullOrWhiteSpace(earlier.SystemType) || string.Equals(earlier.SystemType,later.SystemType,StringComparison.OrdinalIgnoreCase);
+                    // Same-size intervals have equal width: only equal centres imply full coverage.
+                    bool size=!earlier.DiameterMm.HasValue || (later.DiameterMm.HasValue && earlier.DiameterMm.Value==later.DiameterMm.Value);
+                    if(type && system && size) {warnings.Add("Rule '"+later.Name+"' is shadowed by earlier rule '"+earlier.Name+"'.");break;}
+                }
+            }
+            return warnings;
         }
         public PipeRule Match(string pipeType, string systemType, double diameterMm)
         {
@@ -100,7 +122,42 @@ namespace PipeSplitter2024
         }
         public static T Read<T>(string path)
         {
-            using (var stream = File.OpenRead(path)) return (T)new DataContractJsonSerializer(typeof(T)).ReadObject(stream);
+            byte[] data=File.ReadAllBytes(path);
+            if(typeof(T)==typeof(RuleFile)) CheckRuleJson(data);
+            using(var stream=new MemoryStream(data)) return (T)new DataContractJsonSerializer(typeof(T)).ReadObject(stream);
+        }
+        private static string MemberName(XmlElement member) {return member.HasAttribute("item")?member.GetAttribute("item"):member.LocalName;}
+        private static void CheckMembers(XmlElement node, string context, string[] allowed)
+        {
+            var known=new HashSet<string>(allowed,StringComparer.Ordinal);
+            foreach(XmlElement member in node.ChildNodes.OfType<XmlElement>())
+                if(!known.Contains(MemberName(member))) throw new ArgumentException("Unknown JSON member '"+MemberName(member)+"' in "+context);
+        }
+        private static void CheckRuleJson(byte[] data)
+        {
+            var xml=new XmlDocument();
+            using(var reader=JsonReaderWriterFactory.CreateJsonReader(data,XmlDictionaryReaderQuotas.Max)) xml.Load(reader);
+            XmlElement root=xml.DocumentElement;
+            CheckMembers(root,"rules.json root",new[]{"SchemaVersion","Rules"});
+            XmlElement list=root.ChildNodes.OfType<XmlElement>().FirstOrDefault(node=>MemberName(node)=="Rules");
+            if(list==null) return;
+            int index=0;
+            foreach(XmlElement rule in list.ChildNodes.OfType<XmlElement>())
+            {
+                XmlElement name=rule.ChildNodes.OfType<XmlElement>().FirstOrDefault(node=>MemberName(node)=="Name");
+                string context="rule "+index+(name==null?" (Name missing)":" ('"+name.InnerText+"')");
+                CheckMembers(rule,context,new[]{"Name","Enabled","PipeType","SystemType","DiameterMm","MaximumM","MinimumM"});index++;
+            }
+        }
+        internal static void CheckExtensionData(RuleFile file)
+        {
+            // Public ExtensionData cannot expose member names. Round-trip it through the documented
+            // serializer to inspect preserved unknown members without private reflection.
+            if(file.ExtensionData==null && (file.Rules==null || file.Rules.All(rule=>rule==null || rule.ExtensionData==null))) return;
+            using(var stream=new MemoryStream())
+            {
+                new DataContractJsonSerializer(typeof(RuleFile)).WriteObject(stream,file);CheckRuleJson(stream.ToArray());
+            }
         }
         public static void Save<T>(string path, T value)
         {
@@ -116,8 +173,15 @@ namespace PipeSplitter2024
         }
         public static RuleFile LoadRules()
         {
+            string source;return LoadRules(out source);
+        }
+        public static RuleFile LoadRules(out string source)
+        {
             if (!File.Exists(RulesPath)) Save(RulesPath, new RuleFile());
-            RuleFile rules = Read<RuleFile>(RulesPath);
+            source=File.ReadAllText(RulesPath);
+            byte[] data=System.Text.Encoding.UTF8.GetBytes(source);CheckRuleJson(data);
+            RuleFile rules;
+            using(var stream=new MemoryStream(data)) rules=(RuleFile)new DataContractJsonSerializer(typeof(RuleFile)).ReadObject(stream);
             if (rules == null) throw new ArgumentException("Rules file is null");
             rules.Validate();return rules;
         }

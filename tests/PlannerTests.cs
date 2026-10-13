@@ -153,23 +153,89 @@ internal static class PlannerTests
             SettingsStore.Save(file,ruleFile);
             RuleFile restored=SettingsStore.Read<RuleFile>(file);restored.Validate();
             Assert(restored.Rules.Count==3 && restored.Match("PVC","",50).MinimumM==.3,"Rules JSON round trip");
-            var settings=new UserSettings {MaximumM=3,MinimumM=.3,Remainder="Balanced",AllEligible=true,WindowWidth=1100,WindowHeight=900};
+            var settings=new UserSettings {MaximumM=3,MinimumM=.3,Remainder="Balanced",WindowWidth=1100,WindowHeight=900};
             SettingsStore.Save(file,settings);
             UserSettings read=SettingsStore.Read<UserSettings>(file);read.Validate();
-            Assert(read.Remainder=="Balanced" && read.AllEligible && read.WindowWidth==1100,"Preferences round trip");
+            Assert(read.Remainder=="Balanced" && read.WindowWidth==1100,"Preferences round trip");
             System.IO.File.WriteAllText(file,"{}");
-            read=SettingsStore.Read<UserSettings>(file);read.Validate();Assert(read.MaximumM==6 && !read.AllEligible,"Missing saved fields use safe defaults");
+            read=SettingsStore.Read<UserSettings>(file);read.Validate();Assert(read.MaximumM==6,"Missing saved fields use safe defaults");
             System.IO.File.WriteAllText(file,"{\"SchemaVersion\":1,\"Rules\":[{\"Name\":\"Missing max\",\"PipeType\":\"Steel\"}]}");
             bool rejected=false;try{SettingsStore.Read<RuleFile>(file);}catch(System.Runtime.Serialization.SerializationException){rejected=true;}Assert(rejected,"Missing required rule maximum rejected");
         }
         finally {if(System.IO.File.Exists(file))System.IO.File.Delete(file);System.IO.Directory.Delete(folder);}
         Console.WriteLine("Phase 2: 30,000 placement/compensation cases and rule/settings JSON checks passed; production APPDATA untouched.");
     }
+    private static void ReviewFixChecks()
+    {
+        var session=new SessionInfo {RevitVersion="2024 / standalone",WindowsUser="TestUser",DocumentPath="test.rvt"};
+        Assert(session.Header().Contains("2.0.0.0") && session.Header().Contains("TestUser") && session.Header().Contains("test.rvt"),"Session metadata header");
+        var cuts=new List<double>{6.01,6.04,1.03};var actual=new List<double>{6,6,1};
+        var measurement=TakeoutMeasurement.Measure(cuts,actual,123,1e-8);
+        Assert(measurement!=null,"Uniform takeout measurement");Near(measurement.FirstPieceLoss,.01,"First piece loss");Near(measurement.LastPieceLoss,.03,"Last piece loss");
+        var reverseCuts=new List<double>(cuts);reverseCuts.Reverse();var reverseActual=new List<double>(actual);reverseActual.Reverse();
+        var reversed=TakeoutMeasurement.Measure(reverseCuts,reverseActual,123,1e-8);
+        Assert(reversed!=null,"Reversed orientation measurement");Near(reversed.FirstPieceLoss,.03,"Reversed first loss");Near(reversed.LastPieceLoss,.01,"Reversed last loss");
+        var two=TakeoutMeasurement.Measure(new List<double>{6.01,2.03},new List<double>{6,2},123,1e-8);
+        Assert(two!=null,"Two-piece measurement");Near(two.FirstPieceLoss,.01,"Two-piece first");Near(two.LastPieceLoss,.03,"Two-piece last");
+        Assert(TakeoutMeasurement.Measure(new List<double>{6.01,6.05,1.03},actual,123,1e-8)==null,"Non-uniform middle joints rejected");
+        Assert(TakeoutMeasurement.Measure(null,actual,123,1e-8)==null,"Null takeout input rejected");
+        foreach(var item in new[]{measurement,reversed,two})
+        foreach(RemainderPlacement placement in Enum.GetValues(typeof(RemainderPlacement)))
+        foreach(int count in new[]{2,3,5})
+        {
+            double length=(count-1)*6.0+1;
+            List<double> seed=item.Seed(length,count,6,.5,placement);
+            Near(seed.Sum(),length,"Cached seed preserves route");
+            var expected=Planner.FinishedTargets(length-(count-1)*(item.FirstPieceLoss+item.LastPieceLoss),count,6,.5,placement);
+            for(int i=0;i<count;i++) Near(seed[i]-(i==0?item.FirstPieceLoss:i==count-1?item.LastPieceLoss:item.FirstPieceLoss+item.LastPieceLoss),expected[i],"Seed honors every placement");
+        }
+        Reject(()=>measurement.Seed(6,1,6,.5,RemainderPlacement.End),"No single-piece cache seed");
+        var supplied=new Dictionary<long,List<double>>{{10,new List<double>{6.01,1.03}}};
+        var snapshot=new PreviewSnapshot(new long[]{10,20},supplied,"Visible rows");supplied[10][0]=999;
+        Near(snapshot.PlanFor(10)[0],6.01,"Preview deep copy");var returned=snapshot.PlanFor(10);returned[0]=888;
+        Near(snapshot.PlanFor(10)[0],6.01,"Apply plan copy");
+        Assert(snapshot.Count==1 && snapshot.VerifiedIds.Single()==10,"Only verified ids retained");
+        Assert(!snapshot.IncludesNewIds(new long[0]) && !snapshot.IncludesNewIds(new long[]{10,20}),"Narrowing and previous failed rows not widening");
+        Assert(snapshot.IncludesNewIds(new long[]{30}),"Widening requires new preview");
+        var rules=new RuleFile();rules.Rules.Add(new PipeRule{Name="Broad",PipeType="Steel",MaximumM=6});rules.Rules.Add(new PipeRule{Name="Narrow",PipeType="steel",SystemType="Supply",DiameterMm=100,MaximumM=4});
+        rules.Validate();Assert(rules.ShadowWarnings().Single().Contains("Narrow"),"Broad selector shadow detected");
+        rules.Rules[0].Enabled=false;Assert(rules.ShadowWarnings().Count==0,"Disabled rule does not shadow");
+        rules.Rules[0].Enabled=true;rules.Rules[0].DiameterMm=100;rules.Rules[1].DiameterMm=100.0005;
+        Assert(rules.ShadowWarnings().Count==0,"Overlapping size intervals are not full shadow");
+        string folder=System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"review-checks-"+Guid.NewGuid().ToString("N"));System.IO.Directory.CreateDirectory(folder);
+        string path=System.IO.Path.Combine(folder,"rules.json");
+        try
+        {
+            string unknown="{\"SchemaVersion\":1,\"Rules\":[{\"Name\":\"Typo rule\",\"PipeType\":\"Steel\",\"MaximumM\":6,\"DiamterMm\":100}]}";
+            System.IO.File.WriteAllText(path,unknown);bool rejected=false;
+            try {SettingsStore.Read<RuleFile>(path);}catch(ArgumentException ex){rejected=ex.Message.Contains("DiamterMm") && ex.Message.Contains("Typo rule");}Assert(rejected,"Unknown rule member names field and rule");
+            using(var stream=new System.IO.MemoryStream(System.Text.Encoding.UTF8.GetBytes(unknown)))
+            {
+                var direct=(RuleFile)new System.Runtime.Serialization.Json.DataContractJsonSerializer(typeof(RuleFile)).ReadObject(stream);
+                Assert(direct.Rules[0].ExtensionData!=null,"Unknown field retained in ExtensionData");Reject(()=>direct.Validate(),"ExtensionData validation rejects unknown field");
+            }
+            System.IO.File.WriteAllText(path,"{\"SchemaVersion\":1,\"Rules\":[],\"Ruels\":[]}");
+            rejected=false;try{SettingsStore.Read<RuleFile>(path);}catch(ArgumentException ex){rejected=ex.Message.Contains("Ruels");}Assert(rejected,"Unknown root member named");
+            System.IO.File.WriteAllText(path,"{\"AllEligible\":true,\"MaximumM\":6,\"MinimumM\":0.5}");
+            var saved=SettingsStore.Read<UserSettings>(path);SettingsStore.Save(path,saved);
+            Assert(!System.IO.File.ReadAllText(path).Contains("AllEligible"),"Legacy execution scope discarded and not persisted");
+            var started=new DateTime(2026,10,13,12,0,0);var first=new AuditSessionFile(folder,started);var second=new AuditSessionFile(folder,started);
+            first.Append("Header",new[]{"one"});first.Append("Header",new[]{"two"});second.Append("Header",new[]{"different-session"});
+            Assert(first.PathName!=second.PathName,"Timestamp collision uses unique path");
+            Assert(System.IO.File.ReadAllLines(first.PathName).SequenceEqual(new[]{"Header","one","two"}),"Session append never rewrites previous rows");
+            string log=System.IO.Path.Combine(folder,"log.txt");System.IO.File.WriteAllText(log,"old-log");
+            Assert(SessionFiles.RotateLog(log,3) && System.IO.File.ReadAllText(log+".bak")=="old-log","Log rotated to backup");
+            System.IO.File.WriteAllText(log,"new-log");SessionFiles.RotateLog(log,3);
+            Assert(System.IO.File.ReadAllText(log+".bak")=="new-log","Only latest backup retained");
+        }
+        finally {foreach(string file in System.IO.Directory.GetFiles(folder))System.IO.File.Delete(file);System.IO.Directory.Delete(folder);}
+        Console.WriteLine("Review fixes: takeout orientation/count/placement, immutable snapshot, strict JSON, shadowing, settings, audit append and log rotation checks passed.");
+    }
     private static int Main()
     {
         try
         {
-            EdgeCases(); RandomAllocations(); SyntheticTakeout(); PlacementAndRules();
+            EdgeCases(); RandomAllocations(); SyntheticTakeout(); PlacementAndRules(); ReviewFixChecks();
             Console.WriteLine("PASS: " + assertions + " assertions. No Revit assemblies loaded; no Revit API behavior tested.");
             return 0;
         }

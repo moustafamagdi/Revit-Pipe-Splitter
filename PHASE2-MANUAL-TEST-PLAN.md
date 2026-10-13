@@ -1,38 +1,36 @@
-# Phase 2 manual verification
+# Phase 2 review fixes - manual verification (2.0.0.0)
 
-**All scenarios: NEEDS MANUAL VERIFICATION. No Revit execution occurred.**
+**Every scenario below: NEEDS MANUAL VERIFICATION. The assistant has not executed the DLL in Revit. Compilation and the Revit-free harness do not validate Revit API behavior.**
 
-Keep using the Phase 1 manual plan for transactions, warnings, metadata/worksets/phases, insulation, routing, tolerances and rollback. Its old display-only-filter expectation is superseded by the Phase 2 scope tests below. Phases 3/4 are pending.
+Use a disposable model copy. Retain the Phase 1 manual plan for prior coverage. This plan supersedes earlier Phase 2 expectations about subset Apply, persisted scope and overwritten audit.csv. Phase 3 is not started.
 
-New API dependencies needing manual verification: Pipe.Diameter and piping system type lookup for rule matching; LocationCurve endpoint ordering for placement; ISelectionFilter and Selection.PickObjects while the modal form is hidden; OperationCanceledException handling; Show/re-activation; Selection.SetElementIds after dialog closure; resulting pipe/fitting ElementId identities and lengths before/after group rollback/commit.
+| # | Action | Expected behavior needing manual verification |
+| --- | --- | --- |
+| 1 | Open the command and inspect title, assembly and log session header. | Version 2.0.0.0; Revit version/build, Windows user and Document.PathName recorded correctly. Unsaved documents may have an empty path. |
+| 2 | Preview a multi-piece pipe, then Apply unchanged. | Log identifies saved verified-plan first attempt; no extra initial raw trial; actual finished lengths meet targets after unions. |
+| 3 | Use a family/condition where a seeded plan fails or final measured targets differ. | Trial rolls back and guarded cache/iterative fallback executes, with all final checks. Failure-processing errors and regeneration errors reject the pipe. |
+| 4 | Preview several pipes with mixed success/failure. | Verified set counts only successful rows; Apply operates exactly on those IDs, never failed/unverified rows. |
+| 5 | Narrow filters or change sort after Preview, including Status filter hiding successes. | Verified set and Apply count stay unchanged; confirmation explicitly includes hidden verified rows. |
+| 6 | Widen filters or switch to All eligible, introducing previously unrequested eligible IDs. | Snapshot cleared and Apply disabled until a new Preview. Switching labels without introducing new eligible IDs need not invalidate. |
+| 7 | Change max/min, strict mode, remainder, scan selection or rules; also edit rules externally before Apply. | Scan/Preview invalidated; file changes caught before execution. No stale cut plans used. |
+| 8 | Close on All eligible, reopen; test legacy settings containing AllEligible=true. | Always Visible rows; other preferences/window size restore. Saved file no longer contains execution scope. |
+| 9 | Misspell a root member and then a rule member (including MaximumM); test direct unknown selector. | Loading blocked; error names field and root or rule name/index. No silent default matching. |
+| 10 | Put broad enabled rule before specific rule; reverse order; disable broad rule. | Correct shadow warning for the covered rule only; first-match precedence unchanged. |
+| 11 | Export scan combinations with grid filters active. Empty rules list: insert example; repeat with nonempty list. | CSV covers all scanned rows with correct type/system TYPE/nominal diameter/count. Example disabled until edited; nonempty rules not overwritten. |
+| 12 | Preview then Apply in one dialog; reopen and run again rapidly. | One timestamped audit per session with operations, batches appended once, no prior session overwritten; collision suffix if same second. Every row has correct session metadata. |
+| 13 | Export audit to an existing filename; inspect Preview, failed and committed rows. | Existing file refused. Preview/rollback IDs empty, simulated lengths labelled; committed result/union IDs resolve and align with lengths. |
+| 14 | Prepare log above 5 MB, run command, repeat with prior backup present. | Rotation to log.txt.bak, only one backup; new log retains session metadata. I/O errors surfaced without claiming model rollback after commit. |
+| 15 | Split insulated pipes on non-active worksets and different creation/demolition phases. | Newly created insulation matches original pipe placement; inherited insulation verified. Type/thickness preserved. |
+| 16 | Test inherited insulation with a placement mismatch, read-only placement or unavailable phase. | Entire pipe rolls back on mismatch; no leftover unions/pieces/insulation. Confirm failure identifies offending element. |
+| 17 | Warning-only operation, Strict OFF then ON, including batch rollback. | Default accepts warning with '(n warnings)' status and summary total; strict rejects pipe; full warning text in row/audit/log. |
+| 18 | Workshared model: another user's pipe, editable pipe, then ownership conflict before commit. | Exclusion/checkout checked once per processing call; correct skip/error and per-pipe atomicity despite retries. Scan has its own check. |
+| 19 | End/Start/Balanced with reversed, vertical and sloped curves; two-piece and asymmetric-union cases. | Measured endpoint losses correspond to piece order; target lengths and original endpoint connections preserved. |
+| 20 | Non-uniform middle unions/takeout. | Measurement is not cached; iterative final verification remains active; incorrect results never accepted. |
+| 21 | Select rows and Select all Failed/Skipped, including hidden failures and previously applied results. | Dialog closes; Selection.SetElementIds selects valid original/result IDs; ShowElements zooms. Reopen requires a new Scan. Zoom failure reports separately. |
+| 22 | Full regression: pipe between elbows, pinned/grouped/branch pipe, missing union by size, existing short pipe, exactly max and slightly above max, high minimum. | Routing and exclusions remain; BreakCurve/NewUnionFitting/regeneration preserve system/type/level/diameter/workset/phases and both endpoint connections; infeasible pipes unchanged. |
+| 23 | Preview rollback and Apply with multiple pipes, one fails; one Undo after Apply. | Preview leaves model geometry unchanged; only successful Apply pipes committed; entire batch restored in one Undo. Check insulation/fittings too. Preview ownership relinquishment is not guaranteed. |
+| 24 | 1000+ pipes and smaller windows at user's actual display scale. | Saved-plan path reduces redundant work where valid; warning/verified counts correct; requested buttons/notes accessible in existing layout. Record timings and clipping; responsiveness/layout work remains deferred. |
 
-| # | Action | Expected observation | Status |
-| --- | --- | --- | --- |
-| 1 | 12.05 m pipe, max 6/min 0.5, End then Start in separate previews. | Tail/head distribution reverses relative to stored curve direction; full finished segments meet target after unions. | Needs manual verification |
-| 2 | Same pipe with Balanced; also a two-piece pipe and a high-minimum case. | End pieces equal; middle pieces full where feasible; reduced equally when needed; all limits respected. | Needs manual verification |
-| 3 | Repeat placements on vertical/sloped/reversed pipes with asymmetric unions. | Endpoint connections stay fixed; cache cannot bypass finished-length validation. | Needs manual verification |
-| 4 | Configure specific type+system+diameter rule ahead of a broad type rule. | First matching enabled rule wins, selectors combine with AND; grid shows rule/effective limits. | Needs manual verification |
-| 5 | Steel 6 m, PVC 3 m, unmatched Copper with global max. | Each row uses its appropriate max; no matching rule falls back globally. | Needs manual verification |
-| 6 | Size boundary, system type vs system instance names, disabled rule. | Nominal millimetres and system TYPE matching work as documented; disabled rules do not apply. | Needs manual verification |
-| 7 | Rule max below global minimum; malformed JSON; missing max. | Incompatible effective pair blocks only that row; invalid file prevents new Scan/Apply and reports cause. | Needs manual verification |
-| 8 | Edit rules after Scan without Reload, then Reload and Scan. | Existing rows retain frozen limits until reload; reload invalidates previews and new scan updates limits. | Needs manual verification |
-| 9 | Change controls, size/maximize window, close/reopen. Corrupt settings.json in a disposable test. | Valid preferences restored; corrupt preferences warn and use defaults; source model IDs not restored across documents. | Needs manual verification |
-| 10 | Pick pipes in Revit; attempt picking fitting/linked element; Finish. | Only host Pipe selections accepted; form restores; selected-only Scan follows picked IDs. | Needs manual verification |
-| 11 | Pick then Esc; no selection; attempt unsupported view switch during picking. | Previous selection survives cancellation and form restores; failures show clear error without model change. | Needs manual verification |
-| 12 | Select several grid rows, then Select rows in Revit. | Form closes, intended existing pipes selected afterwards; successful Apply rows map to resulting pieces. | Needs manual verification |
-| 13 | Select all Failed/Skipped with hidden errors and Blocked rows. | All matching original rows in scan selected, regardless of grid filters; no invalid temporary preview IDs. | Needs manual verification |
-| 14 | Fresh preferences, filter to a known subset, Preview/Apply Visible rows. | Default visible scope; only eligible visible rows processed; confirmation count matches; hidden pipes unchanged. | Needs manual verification |
-| 15 | Widen filters or switch to All eligible after subset Preview. | Apply unavailable until every newly included eligible row passes Preview; no silent partial apply. | Needs manual verification |
-| 16 | Explicit All eligible with most rows hidden. | Preview/Apply include all eligible scan rows; confirmation clearly says All eligible and exact total. | Needs manual verification |
-| 17 | Filter Status=Estimated, then Preview. | Successes may disappear as status changes; Apply never silently processes hidden rows in Visible mode. Adjust filters to see successful rows. | Needs manual verification |
-| 18 | Apply subset, then process another subset; try repeating Apply on committed rows. | Committed rows no longer eligible; totals still include results; remaining rows require another Preview. | Needs manual verification |
-| 19 | Audit after Preview. | Operation/outcome say simulated and rolled back; resulting/created/union ID fields empty; before and simulated after lengths present. | Needs manual verification |
-| 20 | Audit after Apply with mixed successes/failures. | Committed result/new pipe IDs and union IDs resolve in document; lengths align with result IDs; failed rows have no output IDs. | Needs manual verification |
-| 21 | Warning-only vs strict failure, plus forced batch rollback. | Audit records warnings and operation outcome; no rolled-back IDs appear as committed. | Needs manual verification |
-| 22 | Close form via Select rows; inspect APPDATA audit.csv. Start another session. | Latest completed dialog audit survives close; next session intentionally overwrites on first operation; export preserves separate copy. | Needs manual verification |
-| 23 | Export audit with commas, quotes, newlines and formula-like names. | CSV opens with correct fields and text values; no interpreted spreadsheet formulas. | Needs manual verification |
-| 24 | Apply then one Undo. | Whole committed batch restored in one step; audit remains a historical record (does not automatically track Undo). | Needs manual verification |
-| 25 | Re-run Phase 1 workset/phase/insulation/routing/connection scenarios with per-rule limits. | All prior guards still active and failures remain per-pipe atomic. | Needs manual verification |
-| 26 | Review full interface on current monitor and reopen at smaller window size. | All new controls usable; report clipping/layout issues for Phase 3. | Needs manual verification |
+API behavior relied on: document/version metadata; collectors and Pipe/SystemType/diameter reads; LocationCurve direction/length and model tolerances; routing rule lookup; worksharing checkout; BreakCurve and union connector creation/disconnection; Regenerate; workset/phase setters and inherited insulation; PipeInsulation.Create/GetInsulationIds/type/thickness; FailurePreprocessor warning/error handling; Transaction/TransactionGroup rollback/commit/Assimilate; element identity across rollback; PickObjects/ISelectionFilter cancellation with hide/re-show; SetElementIds and ShowElements after modal close. **All need manual verification**, including the prior Phase 1 tests.
 
-Report scenario number, rule file, placement, scan/execution scope, family/type/size, error/log excerpt and actual vs expected result. Do not proceed to Phase 3 until the user confirms.
+Report scenario number, family/type/size, placement, rule file, expected/actual result and session log/audit excerpt. Stop after this review; do not proceed to Phase 3 until the user confirms.
