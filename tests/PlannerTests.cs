@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using PipeSplitter2024;
@@ -105,11 +105,71 @@ internal static class PlannerTests
         }
         Console.WriteLine("10,000 synthetic asymmetric-takeout cases passed (arithmetic only).");
     }
+    private static void PlacementAndRules()
+    {
+        List<double> start=Planner.Split(12.05,6,.5,RemainderPlacement.Start);
+        Near(start[0],.5,"Start remainder");Near(start[2],6,"Start full piece");
+        List<double> balanced=Planner.Split(12.05,6,.5,RemainderPlacement.Balanced);
+        Near(balanced[0],3.025,"Balanced first");Near(balanced[1],6,"Balanced middle");Near(balanced[2],3.025,"Balanced last");
+        Reject(()=>Planner.Split(12,6,.5,(RemainderPlacement)99),"Unknown placement");
+        Random random=new Random(271828);
+        for(int i=0;i<10000;i++)
+        {
+            int count=2+random.Next(30);double max=1+random.NextDouble()*10,min=.01+random.NextDouble()*(max-.01);
+            double net=count*(min+random.NextDouble()*(max-min));
+            foreach(RemainderPlacement placement in Enum.GetValues(typeof(RemainderPlacement)))
+            {
+                List<double> targets=Planner.FinishedTargets(net,count,max,min,placement);
+                Near(targets.Sum(),net,"Placement conservation");
+                Assert(targets.All(v=>v>=min-1e-8 && v<=max+1e-8),"Placement limits");
+                if(placement==RemainderPlacement.Balanced) Near(targets[0],targets[count-1],"Equal ends");
+                if(placement==RemainderPlacement.Start) Assert(targets[0]<=targets[count-1]+1e-8,"Start ordering");
+                if(placement==RemainderPlacement.End) Assert(targets[0]+1e-8>=targets[count-1],"End ordering");
+                double left=.01,right=.025;
+                List<double> cuts=Enumerable.Repeat((net+(count-1)*(left+right))/count,count).ToList();
+                List<double> actual=cuts.Select((v,j)=>v-(j==0?left:j==count-1?right:left+right)).ToList();
+                List<double> shifted=Planner.CompensateCuts(cuts,actual,targets);
+                for(int j=0;j<count;j++) Near(shifted[j]-(j==0?left:j==count-1?right:left+right),targets[j],"Placement compensation");
+            }
+        }
+        var ruleFile=new RuleFile();
+        ruleFile.Rules.Add(new PipeRule{Name="Specific",PipeType="Steel",SystemType="Supply",DiameterMm=100,MaximumM=4});
+        ruleFile.Rules.Add(new PipeRule{Name="Steel fallback",PipeType="Steel",MaximumM=6});
+        ruleFile.Rules.Add(new PipeRule{Name="PVC",PipeType="PVC",MaximumM=3,MinimumM=.3});
+        ruleFile.Validate();
+        Assert(ruleFile.Match("steel","supply",100).Name=="Specific","Rule AND and case-insensitive matching");
+        Assert(ruleFile.Match("Steel","Return",100).Name=="Steel fallback","System mismatch falls through");
+        Assert(ruleFile.Match("Steel","Supply",80).Name=="Steel fallback","Size mismatch falls through");
+        Assert(ruleFile.Match("Copper","Supply",100)==null,"Global default fallback");
+        ruleFile.Rules[0].Enabled=false;
+        Assert(ruleFile.Match("Steel","Supply",100).Name=="Steel fallback","Disabled rules");
+        ruleFile.Rules.Add(new PipeRule{Name="Invalid",MaximumM=6});
+        Reject(()=>ruleFile.Validate(),"Selector required");ruleFile.Rules.RemoveAt(3);
+        string folder=System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"settings-checks-"+Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(folder);
+        string file=System.IO.Path.Combine(folder,"data.json");
+        try
+        {
+            SettingsStore.Save(file,ruleFile);
+            RuleFile restored=SettingsStore.Read<RuleFile>(file);restored.Validate();
+            Assert(restored.Rules.Count==3 && restored.Match("PVC","",50).MinimumM==.3,"Rules JSON round trip");
+            var settings=new UserSettings {MaximumM=3,MinimumM=.3,Remainder="Balanced",AllEligible=true,WindowWidth=1100,WindowHeight=900};
+            SettingsStore.Save(file,settings);
+            UserSettings read=SettingsStore.Read<UserSettings>(file);read.Validate();
+            Assert(read.Remainder=="Balanced" && read.AllEligible && read.WindowWidth==1100,"Preferences round trip");
+            System.IO.File.WriteAllText(file,"{}");
+            read=SettingsStore.Read<UserSettings>(file);read.Validate();Assert(read.MaximumM==6 && !read.AllEligible,"Missing saved fields use safe defaults");
+            System.IO.File.WriteAllText(file,"{\"SchemaVersion\":1,\"Rules\":[{\"Name\":\"Missing max\",\"PipeType\":\"Steel\"}]}");
+            bool rejected=false;try{SettingsStore.Read<RuleFile>(file);}catch(System.Runtime.Serialization.SerializationException){rejected=true;}Assert(rejected,"Missing required rule maximum rejected");
+        }
+        finally {if(System.IO.File.Exists(file))System.IO.File.Delete(file);System.IO.Directory.Delete(folder);}
+        Console.WriteLine("Phase 2: 30,000 placement/compensation cases and rule/settings JSON checks passed; production APPDATA untouched.");
+    }
     private static int Main()
     {
         try
         {
-            EdgeCases(); RandomAllocations(); SyntheticTakeout();
+            EdgeCases(); RandomAllocations(); SyntheticTakeout(); PlacementAndRules();
             Console.WriteLine("PASS: " + assertions + " assertions. No Revit assemblies loaded; no Revit API behavior tested.");
             return 0;
         }

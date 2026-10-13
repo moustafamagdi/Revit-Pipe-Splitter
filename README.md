@@ -8,10 +8,11 @@ Command: `PipeSplitter2024.Command`.
 
 - Configurable finished target length (default 6 m) and minimum piece length (default 0.5 m).
 - Compensation for actual union takeout so full pieces reach the target after fittings are placed.
-- Redistribution of short remainders while respecting the minimum.
-- Model-wide or preselected-pipe scanning, estimates, and exact rollback preview.
+- End / Start / Balanced remainder placement while respecting the minimum.
+- Model-wide, preselected or interactively picked pipe scanning, estimates, and exact rollback preview.
 - Pipe insulation type and thickness preservation on resulting pipe segments.
-- Per-column numeric/text filters, ascending/descending sorting, and visible-row CSV export.
+- Per-column filters/sorting, visible-row execution by default, table export, and committed-ID audit CSV.
+- JSON limits per type/system/size, remembered controls and window size.
 - Per-pipe rollback on failed validation, with one Undo entry for the completed batch.
 
 ## Build
@@ -29,8 +30,8 @@ Output: `PipeSplitter2024.dll` beside the source files. Autodesk assemblies are 
 1. Open an editable Revit project (not the Family Editor).
 2. In Add-In Manager (Manual), load `PipeSplitter2024.dll`.
 3. Run `PipeSplitter2024.Command`.
-4. Set finished target and minimum lengths, then select the scan scope.
-5. Run Scan, Preview, and Apply in order.
+4. Set target/minimum, remainder placement, scan scope and Apply to. Use Pick pipes in Revit if needed.
+5. Run Scan, inspect effective rule limits, then Preview and Apply. Apply requires every eligible row in the current execution scope to have passed Preview.
 
 For optional persistent installation, keep this repository folder in a stable location and run `Install.ps1`. Restart Revit and choose Add-Ins > External Tools > Pipe Splitter. The script registers this DLL path in the current user's Revit 2024 add-ins directory.
 
@@ -46,7 +47,7 @@ Preview can be slow on large models and runs synchronously. Use Selected pipes o
 
 Click a column header to toggle sorting; right-click to set its filter. Multiple column filters are combined with AND. Text matching ignores case. Numeric length filtering uses the three decimal places shown in the table. CSV export follows the visible rows and sort order.
 
-**Filters affect the table and CSV only. Preview, Apply, and summary totals use the full scan scope, including hidden rows.**
+**Apply to defaults to Visible rows for fresh settings. Preview and Apply process only eligible rows in that scope; All eligible is an explicit alternative. Confirmation states the exact count. Summary totals still cover the whole scan.**
 
 ## Scope and limitations
 
@@ -61,7 +62,7 @@ Click a column header to toggle sorting; right-click to set its filter. Multiple
 
 ## Validation status
 
-Phase 1 compiles with the .NET Framework csc compiler and /langversion:5 against the local Revit 2024 API. Test-Planner.ps1 compiles and runs an isolated console harness for Planner: deterministic edge cases, 50,000 seeded allocations, and 10,000 synthetic takeout cases. These are arithmetic checks, not Revit validation. The DLL has **not been run or tested inside Revit** by the assistant, per the user's instruction. Actual family-dependent behavior remains for user validation.
+The current add-in compiles with the .NET Framework csc compiler and /langversion:5 against the local Revit 2024 API. Test-Planner.ps1 compiles and runs an isolated console harness for Planner: deterministic edge cases, 50,000 seeded allocations, and 10,000 synthetic takeout cases, plus 30,000 phase-2 placement/compensation cases and rules/settings JSON round-trips. These are standalone checks, not Revit validation. The DLL has **not been run or tested inside Revit** by the assistant, per the user's instruction. Actual family-dependent behavior remains for user validation.
 
 ## Repository files
 
@@ -78,7 +79,7 @@ This repository is the source of truth for all future changes. Build.ps1 overwri
 
 ## Phase 1 handoff
 
-Only Phase 1 of the independent review is implemented. Phases 2-4 require explicit user confirmation before work continues.
+Phase 1 is retained and Phase 2 is now implemented. Phase 3 and Phase 4 require explicit user confirmation. The Phase 1 documents are historical; their old display-only-filter expectations are superseded by Phase 2.
 
 - See PHASE1-CHANGELOG.md for each behavior change and its reason.
 - See MANUAL-TEST-PLAN.md: every Revit API behavior is **needs manual verification**.
@@ -96,3 +97,14 @@ Run the arithmetic harness without loading Revit:
 ```
 
 A successful build or console harness does not establish Revit correctness. Cache acceleration, warning handling, metadata propagation, placement and transaction/undo behavior all remain unverified in Revit.
+## Phase 2 handoff
+
+- PHASE2-CHANGELOG.md explains the functional changes and open risks.
+- PHASE2-MANUAL-TEST-PLAN.md adds the manual Revit scenarios; all remain unverified.
+- RULES-AND-SETTINGS.md documents rule precedence, settings, placement, scope and audit semantics.
+- rules.example.json contains disabled examples. Open rules JSON in the UI and adapt them to actual model names.
+- Phase2Settings.cs provides validated .NET JSON persistence; Phase2Support.cs provides picking/audit helpers; Phase2Form.cs extends the form with Phase 2 controls. Phase 4 restructuring is still deferred.
+- Test-Planner.ps1 exercises pure Planner/rule/settings code without referencing Revit, and writes only into its test output folder.
+- Export audit CSV includes all attempts in this dialog. APPDATA/PipeSplitter/audit.csv is also saved after each batch; Preview IDs are omitted because they no longer exist after rollback.
+
+DLL name remains PipeSplitter2024.dll. The assistant has not run it in Revit. UI responsiveness/cancellation/DPI work remains Phase 3.

@@ -1,7 +1,25 @@
 using System;
 using System.Collections.Generic;
 namespace PipeSplitter2024 {
+ public enum RemainderPlacement { End, Start, Balanced }
  public static class Planner {
+  public static List<double> Split(double length,double maximum,double minimum,RemainderPlacement placement) {
+   return Place(Split(length,maximum,minimum),maximum,minimum,placement);
+  }
+  public static List<double> FinishedTargets(double length,int count,double maximum,double minimum,RemainderPlacement placement) {
+   return Place(FinishedTargets(length,count,maximum,minimum),maximum,minimum,placement);
+  }
+  static List<double> Place(List<double> values,double maximum,double minimum,RemainderPlacement placement) {
+   if(!Enum.IsDefined(typeof(RemainderPlacement),placement)) throw new ArgumentException("Invalid remainder placement");
+   if(placement==RemainderPlacement.Start) values.Reverse();
+   if(placement!=RemainderPlacement.Balanced || values.Count<2) return values;
+   double total=0;foreach(double value in values) total+=value;
+   int middleCount=values.Count-2;
+   double middle=middleCount==0?0:Math.Min(maximum,(total-2*minimum)/middleCount);
+   double end=(total-middleCount*middle)/2;
+   for(int i=0;i<values.Count;i++) values[i]=(i==0 || i==values.Count-1)?end:middle;
+   return values;
+  }
   public const int MaximumPieceCount = 10000;
   // Pure arithmetic roundoff allowances; geometric acceptance uses Revit-derived tolerances in Engine.
   const double ArithmeticTolerance = 1e-9;

@@ -126,9 +126,9 @@ namespace PipeSplitter2024
                 if (Math.Abs(cuts[i] - actual[i] - first - last) > tolerance) return null;
             return new TakeoutMeasurement { RoutingPart = part, StartLoss = first, EndLoss = last };
         }
-        internal List<double> Seed(double length, int count, double max, double min)
+        internal List<double> Seed(double length, int count, double max, double min, RemainderPlacement placement)
         {
-            List<double> targets = Planner.FinishedTargets(length - (count - 1) * (StartLoss + EndLoss), count, max, min);
+            List<double> targets = Planner.FinishedTargets(length - (count - 1) * (StartLoss + EndLoss), count, max, min, placement);
             for (int i = 0; i < count; i++) targets[i] += (i == 0 ? StartLoss : (i == count - 1 ? EndLoss : StartLoss + EndLoss));
             return targets;
         }
@@ -136,7 +136,7 @@ namespace PipeSplitter2024
 
     internal static class RowColumns
     {
-        internal static bool IsNumeric(string name) { return name == "Id" || name == "Length_m" || name == "Pieces" || name == "Unions" || name == "Min_m" || name == "Max_m"; }
+        internal static bool IsNumeric(string name) { return name == "Id" || name == "Length_m" || name == "Pieces" || name == "Unions" || name == "Min_m" || name == "Max_m" || name == "Diameter_mm" || name == "MaxFinished_m" || name == "Minimum_m"; }
         internal static object Value(Row row, string name)
         {
             switch (name)
@@ -151,6 +151,11 @@ namespace PipeSplitter2024
                 case "Lengths_m": return row.Lengths_m ?? "";
                 case "Status": return row.Status ?? "";
                 case "Log": return row.Log ?? "";
+                case "SystemType": return row.SystemType ?? "";
+                case "Diameter_mm": return row.Diameter_mm;
+                case "MaxFinished_m": return row.MaxFinished_m;
+                case "Minimum_m": return row.Minimum_m;
+                case "Rule": return row.Rule ?? "";
                 default: throw new ArgumentException("Unknown column: " + name);
             }
         }

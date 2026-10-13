@@ -1,0 +1,27 @@
+{
+  "SchemaVersion": 1,
+  "Rules": [
+    {
+      "Name": "Steel chilled water DN100",
+      "Enabled": false,
+      "PipeType": "Steel",
+      "SystemType": "Chilled Water Supply",
+      "DiameterMm": 100,
+      "MaximumM": 4,
+      "MinimumM": 0.5
+    },
+    {
+      "Name": "Steel default",
+      "Enabled": false,
+      "PipeType": "Steel",
+      "MaximumM": 6
+    },
+    {
+      "Name": "PVC default",
+      "Enabled": false,
+      "PipeType": "PVC",
+      "MaximumM": 3,
+      "MinimumM": 0.3
+    }
+  ]
+}
