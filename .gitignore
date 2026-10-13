@@ -1,0 +1,16 @@
+# Generated binaries and build output
+*.dll
+*.exe
+*.pdb
+*.zip
+bin/
+obj/
+
+# Local IDE state
+.vs/
+*.user
+*.suo
+
+# Local temporary files
+*.log
+*.bak
