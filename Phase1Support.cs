@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -123,11 +123,12 @@ namespace PipeSplitter2024
 
     internal static class RowColumns
     {
-        internal static bool IsNumeric(string name) { return name == "Id" || name == "Length_m" || name == "Pieces" || name == "Unions" || name == "Min_m" || name == "Max_m" || name == "Diameter_mm" || name == "MaxFinished_m" || name == "Minimum_m"; }
+        internal static bool IsNumeric(string name) { return name == "WarningCount" || name == "Id" || name == "Length_m" || name == "Pieces" || name == "Unions" || name == "Min_m" || name == "Max_m" || name == "Diameter_mm" || name == "MaxFinished_m" || name == "Minimum_m"; }
         internal static object Value(Row row, string name)
         {
             switch (name)
             {
+                case "WarningCount": return row.WarningCount;
                 case "Id": return row.Id;
                 case "Type": return row.Type ?? "";
                 case "Length_m": return row.Length_m;

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using PipeSplitter2024;
@@ -157,8 +157,14 @@ internal static class PlannerTests
             SettingsStore.Save(file,settings);
             UserSettings read=SettingsStore.Read<UserSettings>(file);read.Validate();
             Assert(read.Remainder=="Balanced" && read.WindowWidth==1100,"Preferences round trip");
+            settings.ActiveViewOnly = true;
+            settings.SelectedOnly = false;
+            SettingsStore.Save(file, settings);
+            read = SettingsStore.Read<UserSettings>(file);
+            Assert(read.ActiveViewOnly && !read.SelectedOnly, "Active-view scan scope persists independently of execution scope");
             System.IO.File.WriteAllText(file,"{}");
             read=SettingsStore.Read<UserSettings>(file);read.Validate();Assert(read.MaximumM==6,"Missing saved fields use safe defaults");
+            Assert(!read.ActiveViewOnly, "Legacy settings do not silently enable active-view scope");
             System.IO.File.WriteAllText(file,"{\"SchemaVersion\":1,\"Rules\":[{\"Name\":\"Missing max\",\"PipeType\":\"Steel\"}]}");
             bool rejected=false;try{SettingsStore.Read<RuleFile>(file);}catch(System.Runtime.Serialization.SerializationException){rejected=true;}Assert(rejected,"Missing required rule maximum rejected");
         }
@@ -168,7 +174,7 @@ internal static class PlannerTests
     private static void ReviewFixChecks()
     {
         var session=new SessionInfo {RevitVersion="2024 / standalone",WindowsUser="TestUser",DocumentPath="test.rvt"};
-        Assert(session.Header().Contains("2.0.0.0") && session.Header().Contains("TestUser") && session.Header().Contains("test.rvt"),"Session metadata header");
+        Assert(session.Header().Contains(typeof(SessionInfo).Assembly.GetName().Version.ToString()) && session.Header().Contains("TestUser") && session.Header().Contains("test.rvt"),"Session metadata header");
         var cuts=new List<double>{6.01,6.04,1.03};var actual=new List<double>{6,6,1};
         var measurement=TakeoutMeasurement.Measure(cuts,actual,123,1e-8);
         Assert(measurement!=null,"Uniform takeout measurement");Near(measurement.FirstPieceLoss,.01,"First piece loss");Near(measurement.LastPieceLoss,.03,"Last piece loss");
@@ -223,6 +229,13 @@ internal static class PlannerTests
             first.Append("Header",new[]{"one"});first.Append("Header",new[]{"two"});second.Append("Header",new[]{"different-session"});
             Assert(first.PathName!=second.PathName,"Timestamp collision uses unique path");
             Assert(System.IO.File.ReadAllLines(first.PathName).SequenceEqual(new[]{"Header","one","two"}),"Session append never rewrites previous rows");
+            first.Append("Header", new[]{"مواسير معزولة"});
+            byte[] auditBytes = System.IO.File.ReadAllBytes(first.PathName);
+            Assert(auditBytes.Take(3).SequenceEqual(new byte[]{239,187,191}), "Session audit begins with UTF-8 BOM");
+            string auditText = System.Text.Encoding.UTF8.GetString(auditBytes);
+            Assert(auditText.Count(c => c == '\uFEFF') == 1, "Session audit appends never add a second BOM");
+            Assert(auditText.Contains("\u0645\u0648\u0627\u0633\u064a\u0631 \u0645\u0639\u0632\u0648\u0644\u0629"), "Audit contains the expected Arabic Unicode code points");
+            Assert(System.IO.File.ReadAllLines(first.PathName).Last() == "مواسير معزولة", "Arabic audit text survives append and UTF-8 read");
             string log=System.IO.Path.Combine(folder,"log.txt");System.IO.File.WriteAllText(log,"old-log");
             Assert(SessionFiles.RotateLog(log,3) && System.IO.File.ReadAllText(log+".bak")=="old-log","Log rotated to backup");
             System.IO.File.WriteAllText(log,"new-log");SessionFiles.RotateLog(log,3);
@@ -231,11 +244,38 @@ internal static class PlannerTests
         finally {foreach(string file in System.IO.Directory.GetFiles(folder))System.IO.File.Delete(file);System.IO.Directory.Delete(folder);}
         Console.WriteLine("Review fixes: takeout orientation/count/placement, immutable snapshot, strict JSON, shadowing, settings, audit append and log rotation checks passed.");
     }
+    private static void Phase3Checks()
+    {
+        Assert(Phase3Policy.ValidateLimits(6m, .5m, .001) == "", "Valid finished limits");
+        Assert(Phase3Policy.ValidateLimits(6m, 7m, .001).Contains("Max finished length"), "Minimum greater than max blocked");
+        Assert(Phase3Policy.ValidateLimits(6m, .001m, .001).Length > 0, "Minimum at Revit safety limit blocked");
+        Assert(Phase3Policy.ValidateLimits(0m, .5m, .001).Length > 0, "Zero max blocked");
+        Assert(Phase3Policy.ValidateLimits(100001m, .5m, .001).Length > 0, "Out-of-range max blocked");
+        Assert(Phase3Policy.MatchesStatus("Actionable", "Failed: retryable", true, false), "Retryable failures stay actionable");
+        Assert(!Phase3Policy.MatchesStatus("Actionable", "Applied", false, false), "Applied rows not actionable");
+        Assert(Phase3Policy.MatchesStatus("Will split", "Estimated: needs preview", true, false), "Estimated row will split");
+        Assert(!Phase3Policy.MatchesStatus("Will split", "Preview OK", true, true), "Verified row excluded from Will split");
+        Assert(Phase3Policy.MatchesStatus("Verified", "Preview OK (2 warnings)", true, true), "Verified warning row filter");
+        Assert(!Phase3Policy.MatchesStatus("Verified", "Preview OK", true, false), "Stale preview text cannot count as verified");
+        foreach (string state in new[]{"Skipped", "Blocked", "Failed", "Applied"})
+            Assert(Phase3Policy.MatchesStatus(state, state + ": detail (2 warnings)", false, false), "Status prefix " + state);
+        Assert(Phase3Policy.MatchesStatus("Unchanged", "Not processed (cancelled)", true, false), "Unprocessed cancellation is unchanged");
+        Assert(Phase3Policy.MatchesStatus("Actionable", "Not processed (cancelled)", true, false), "Unprocessed cancellation is retryable");
+        Assert(Phase3Policy.MatchesStatus("Unchanged", "Within limits: unchanged", false, false), "Within limits filter");
+        Assert(Phase3Policy.MatchesStatus("All", null, false, false), "All tolerates missing status");
+        var plans = new Dictionary<long,List<double>> { { 1, new List<double>{6.01,1.03} } };
+        var snapshot = new PreviewSnapshot(new long[]{1}, plans, "Visible rows");
+        var hidden = new long[]{1}.Where(id => Phase3Policy.MatchesStatus("Will split", "Preview OK", true, true));
+        Assert(!snapshot.IncludesNewIds(hidden) && snapshot.Count == 1, "Quick filter hiding verified success preserves snapshot");
+        Assert(snapshot.IncludesNewIds(new long[]{1,2}), "Quick filter widening scope invalidates snapshot");
+        Console.WriteLine("Phase 3: live limit policy, all quick status choices and frozen-set interactions passed (no WinForms or Revit execution).");
+    }
     private static int Main()
     {
         try
         {
             EdgeCases(); RandomAllocations(); SyntheticTakeout(); PlacementAndRules(); ReviewFixChecks();
+            Phase3Checks();
             Console.WriteLine("PASS: " + assertions + " assertions. No Revit assemblies loaded; no Revit API behavior tested.");
             return 0;
         }

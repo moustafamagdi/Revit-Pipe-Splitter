@@ -34,6 +34,11 @@ namespace PipeSplitter2024
                 long length=stream.Length;stream.Position=length;
                 try
                 {
+                    if (created)
+                    {
+                        byte[] preamble = new UTF8Encoding(true).GetPreamble();
+                        stream.Write(preamble, 0, preamble.Length);
+                    }
                     var text=new StringBuilder();if(created) text.AppendLine(header);
                     foreach(string line in lines) text.AppendLine(line);
                     byte[] bytes=new UTF8Encoding(false).GetBytes(text.ToString());stream.Write(bytes,0,bytes.Length);stream.Flush();

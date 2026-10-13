@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Globalization;
@@ -11,8 +11,8 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Plumbing;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.Attributes;
-[assembly: System.Reflection.AssemblyVersion("2.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.0.0.0")]
+
+
 
 namespace PipeSplitter2024 {
  [Transaction(TransactionMode.Manual)]
@@ -22,7 +22,15 @@ namespace PipeSplitter2024 {
     UIDocument ui = data.Application.ActiveUIDocument;
     if (ui == null || ui.Document.IsFamilyDocument || ui.Document.IsReadOnly) { TaskDialog.Show("Pipe Splitter", "Open an editable Revit project first."); return Result.Cancelled; }
     using (var form = new SplitForm(ui)) {
-     form.ShowDialog(new WindowOwner(data.Application.MainWindowHandle));
+     var owner = new WindowOwner(data.Application.MainWindowHandle);
+     while (true)
+     {
+      form.DialogResult = WF.DialogResult.None;
+      form.ShowDialog(owner);
+      if (!form.PickRequested) break;
+      // Pick only after ShowDialog returns and releases its modal owner lock.
+      form.CompletePickRequest();
+     }
      if(form.SelectionToApply!=null) {
       var ids=form.SelectionToApply.Where(id=>ui.Document.GetElement(id)!=null).ToList();ui.Selection.SetElementIds(ids);
       if(ids.Count>0) try {ui.ShowElements(ids);}catch(Exception ex){DiagnosticLog.Error("Selection succeeded but zoom failed",ex);TaskDialog.Show("Pipe Splitter","Elements selected, but zoom failed: "+ex.Message);}
@@ -37,6 +45,7 @@ namespace PipeSplitter2024 {
   public long Id {get;set;} public string Type {get;set;} public double Length_m {get;set;} public int Pieces {get;set;} public int Unions {get;set;}
   public double Min_m {get;set;} public double Max_m {get;set;} public string Lengths_m {get;set;} public string Status {get;set;}
   public string Log {get;set;}
+  public int WarningCount { get { return Warnings.Count; } }
   public string SystemType {get;set;} public double Diameter_mm {get;set;}
   public double MaxFinished_m {get;set;} public double Minimum_m {get;set;} public string Rule {get;set;}
   internal RemainderPlacement Placement;
@@ -129,7 +138,9 @@ namespace PipeSplitter2024 {
   }
   static List<string> ExternalRefs(Connector c, HashSet<long> own) {return c.AllRefs.Cast<Connector>().Where(x=>x.ConnectorType==ConnectorType.End && !own.Contains(x.Owner.Id.Value)).Select(x=>x.Owner.Id.Value+":"+x.Id).OrderBy(x=>x).ToList();}
   sealed class InsulationSpec {
-   public ElementId TypeId; public double Thickness;
+   public ElementId TypeId;
+   public double Thickness;
+   public InsulationPlacement Placement;
   }
   static InsulationSpec ReadInsulation(Document d, ElementId pipeId) {
    var insulationIds=InsulationLiningBase.GetInsulationIds(d,pipeId);
@@ -137,14 +148,15 @@ namespace PipeSplitter2024 {
    if(insulationIds.Count!=1) throw new Exception("Insulation: unexpected number of layers; pipe unchanged");
    var insulation=d.GetElement(insulationIds.First()) as PipeInsulation;
    if(insulation==null) throw new Exception("Insulation: cannot read original pipe insulation");
-   return new InsulationSpec {TypeId=insulation.GetTypeId(),Thickness=insulation.Thickness};
+   return new InsulationSpec {TypeId=insulation.GetTypeId(),Thickness=insulation.Thickness,Placement=InsulationPlacement.Capture(insulation)};
   }
-  static void PreserveInsulation(Document d, IList<ElementId> pipeIds, InsulationSpec original, ModelTolerance tolerance, PipeMetadata metadata) {
+  static void PreserveInsulation(Document d, IList<ElementId> pipeIds, InsulationSpec original, ModelTolerance tolerance) {
    foreach(var pipeId in pipeIds) {
     var current=ReadInsulation(d,pipeId);
     // BreakCurve can propagate insulation. Keep it when present and only create missing hosts.
     if(original!=null && current==null) {
-     var created=PipeInsulation.Create(d,pipeId,original.TypeId,original.Thickness);metadata.MatchPlacement(created);
+     var created = PipeInsulation.Create(d, pipeId, original.TypeId, original.Thickness);
+     original.Placement.MatchPlacement(created);
     } else if(original==null && current!=null) {
      throw new Exception("Insulation: unexpected insulation appeared on an uninsulated pipe");
     } else if(original!=null && (current.TypeId!=original.TypeId || Math.Abs(current.Thickness-original.Thickness)>tolerance.LengthFeet)) {
@@ -157,7 +169,7 @@ namespace PipeSplitter2024 {
     if(original!=null && (actual==null || actual.TypeId!=original.TypeId || Math.Abs(actual.Thickness-original.Thickness)>tolerance.LengthFeet))
      throw new Exception("Insulation: final verification failed for pipe "+pipeId.Value);
     if(original==null && actual!=null) throw new Exception("Insulation: final verification failed for uninsulated pipe "+pipeId.Value);
-    foreach(var insulationId in InsulationLiningBase.GetInsulationIds(d,pipeId)) metadata.VerifyPlacement(d.GetElement(insulationId));
+    foreach(var insulationId in InsulationLiningBase.GetInsulationIds(d,pipeId)) original.Placement.VerifyPlacement(d.GetElement(insulationId));
    }
   }
   // Each pipe is atomic. Failed union placement or failed validation rolls back all of its cuts.
@@ -197,7 +209,9 @@ namespace PipeSplitter2024 {
        }
       }
       if(plans.Any(length=>length*FeetPerMetre<=tolerance.ShortFeet)) throw new Exception("Cut plan contains a Revit short curve");
-      var insulation=ReadInsulation(d,original.Id);
+      var insulation = ReadInsulation(d, original.Id);
+      if (insulation != null && !insulation.Placement.Matches(original))
+          r.AddLog("Original insulation differs from host placement; preserving insulation baseline: " + insulation.Placement.Description());
       var endpoints=Ends(original); var own=new HashSet<long>{r.Id};
       var references=endpoints.Select(c=>ExternalRefs(c,own)).ToList();var origins=endpoints.Select(c=>c.Origin).ToList();
       tx.Start();tx.SetFailureHandlingOptions(tx.GetFailureHandlingOptions().SetFailuresPreprocessor(handler).SetClearAfterRollback(true).SetForcedModalHandling(true));
@@ -244,7 +258,7 @@ namespace PipeSplitter2024 {
        plans=corrected;continue;
       }
       if(actual.Min()<min-finishedTolerance || actual.Max()>max+finishedTolerance) throw new Exception("Finished pipe lengths are outside the specified limits");
-      PreserveInsulation(d,ids,insulation,tolerance,metadata);
+      PreserveInsulation(d,ids,insulation,tolerance);
       foreach(var piece in pieces) metadata.VerifyPipe(piece,tolerance);
       foreach(var unionId in unionIds) {
        var fitting=(FamilyInstance)d.GetElement(unionId);metadata.VerifyPlacement(fitting);
@@ -287,66 +301,13 @@ namespace PipeSplitter2024 {
   WF.ComboBox scope=new WF.ComboBox(); WF.DataGridView grid=new WF.DataGridView();
   WF.CheckBox strictMode=new WF.CheckBox {Text="Strict mode (roll back on warnings)",AutoSize=true,Checked=false};
   readonly Dictionary<string,TakeoutMeasurement> takeoutCache=new Dictionary<string,TakeoutMeasurement>();
-  WF.Label summary=new WF.Label(), note=new WF.Label(); WF.Button scan, preview, apply, export;
+  WF.Button scan, preview, apply, export;
   List<Row> rows=new List<Row>();
   List<Row> visibleRows=new List<Row>();
   readonly Dictionary<string,ColumnFilter> filters=new Dictionary<string,ColumnFilter>();
   string sortColumn="Id"; bool descending=false;
   WF.Label filterInfo=new WF.Label();
   sealed class ColumnFilter {public string Operator; public string Text; public decimal Number;}
-  public SplitForm(UIDocument uidoc) {
-   ui=uidoc;doc=ui.Document;Text="Pipe Splitter 2.0.0.0 | Revit 2024 | Finished Length After Unions";Width=1250;Height=930;MinimumSize=new Size(950,650);StartPosition=WF.FormStartPosition.CenterParent;Font=new Font("Segoe UI",10);BackColor=Color.FromArgb(244,247,250);
-   var layout=new WF.TableLayoutPanel {Dock=WF.DockStyle.Fill,RowCount=7,ColumnCount=1,Padding=new WF.Padding(16)};
-   layout.RowStyles.Add(new WF.RowStyle(WF.SizeType.Absolute,85));layout.RowStyles.Add(new WF.RowStyle(WF.SizeType.Absolute,65));layout.RowStyles.Add(new WF.RowStyle(WF.SizeType.Absolute,100));layout.RowStyles.Add(new WF.RowStyle(WF.SizeType.Absolute,85));layout.RowStyles.Add(new WF.RowStyle(WF.SizeType.Absolute,65));layout.RowStyles.Add(new WF.RowStyle(WF.SizeType.Percent,100));layout.RowStyles.Add(new WF.RowStyle(WF.SizeType.Absolute,100));Controls.Add(layout);
-   note.Text="Target length is the FINISHED pipe length AFTER unions (e.g. 6.000 m). Insulation is preserved.\nPreview verifies a fixed set and cut plan; Apply reuses both with final checks.\nSelect rows in Revit closes this dialog and zooms to the elements. Reopen and Scan again afterwards.";note.Dock=WF.DockStyle.Fill;note.Font=new Font(Font,FontStyle.Bold);layout.Controls.Add(note,0,0);
-   var settings=new WF.FlowLayoutPanel {Dock=WF.DockStyle.Fill};layout.Controls.Add(settings,0,1);
-   settings.Controls.Add(new WF.Label {Text="Finished target (m)",AutoSize=true,Padding=new WF.Padding(0,8,0,0)});
-   ConfigureNumber(maximum,6);settings.Controls.Add(maximum);settings.Controls.Add(new WF.Label {Text="Minimum length (m)",AutoSize=true,Padding=new WF.Padding(12,8,0,0)});ConfigureNumber(minimum,0.5m);settings.Controls.Add(minimum);
-   scope.DropDownStyle=WF.ComboBoxStyle.DropDownList;scope.Width=230;scope.Items.AddRange(new object[]{"All model pipes","Selected pipes only"});scope.SelectedIndex=0;settings.Controls.Add(scope);settings.Controls.Add(strictMode);
-   summary.Dock=WF.DockStyle.Fill;summary.Text="Set the maximum and minimum lengths, then click Scan.";layout.Controls.Add(summary,0,3);
-   filterInfo.Dock=WF.DockStyle.Fill;filterInfo.AutoEllipsis=true;layout.Controls.Add(filterInfo,0,4);
-   grid.Dock=WF.DockStyle.Fill;grid.ReadOnly=true;grid.AllowUserToAddRows=false;grid.AllowUserToDeleteRows=false;grid.AutoSizeColumnsMode=WF.DataGridViewAutoSizeColumnsMode.DisplayedCells;grid.BackgroundColor=Color.White;grid.SelectionMode=WF.DataGridViewSelectionMode.FullRowSelect;grid.RowHeadersVisible=false;layout.Controls.Add(grid,0,5);
-   grid.ColumnHeaderMouseClick+=(s,e)=> {
-    if(e.ColumnIndex<0)return;
-    string column=grid.Columns[e.ColumnIndex].DataPropertyName;
-    if(e.Button==WF.MouseButtons.Left) {descending=sortColumn==column?!descending:false;sortColumn=column;ApplyView();}
-    else if(e.Button==WF.MouseButtons.Right) {
-     var menu=new WF.ContextMenuStrip();
-     menu.Items.Add("Filter "+column+"...",null,(a,b)=>EditFilter(column));
-     menu.Items.Add("Clear this filter",null,(a,b)=>{filters.Remove(column);ApplyView();});
-     menu.Items.Add("Sort ascending",null,(a,b)=>{sortColumn=column;descending=false;ApplyView();});
-     menu.Items.Add("Sort descending",null,(a,b)=>{sortColumn=column;descending=true;ApplyView();});
-     menu.Closed+=(a,b)=>menu.Dispose();menu.Show(WF.Cursor.Position);
-    }
-   };
-   var buttons=new WF.FlowLayoutPanel {Dock=WF.DockStyle.Fill,Padding=new WF.Padding(0,12,0,0)};layout.Controls.Add(buttons,0,6);
-   scan=Button(buttons,"1. Scan",()=>Scan());preview=Button(buttons,"2. Preview",()=>Run(false));apply=Button(buttons,"3. Apply",()=>Run(true));export=Button(buttons,"Export visible CSV",()=>Export());Button(buttons,"Clear all filters",()=>{filters.Clear();ApplyView();});Button(buttons,"Select rows in Revit",()=>SelectRowsInRevit(false));Button(buttons,"Select all Failed/Skipped",()=>SelectRowsInRevit(true));Button(buttons,"Export audit CSV",()=>ExportAudit());Button(buttons,"Close",()=>Close());
-   preview.Enabled=apply.Enabled=export.Enabled=false;maximum.ValueChanged+=(s,e)=>InvalidateScan();minimum.ValueChanged+=(s,e)=>InvalidateScan();scope.SelectedIndexChanged+=(s,e)=>InvalidateScan();strictMode.CheckedChanged+=(s,e)=>InvalidateScan();
-   InitializePhase2(layout);ApplyView();
-  }
-  void EditFilter(string column) {
-   bool numeric=RowColumns.IsNumeric(column);
-   ColumnFilter existing;filters.TryGetValue(column,out existing);
-   using(var dialog=new WF.Form {Text="Filter: "+column,Width=430,Height=230,StartPosition=WF.FormStartPosition.CenterParent,FormBorderStyle=WF.FormBorderStyle.FixedDialog,MaximizeBox=false,MinimizeBox=false,Font=Font}) {
-    var op=new WF.ComboBox {Left=20,Top=20,Width=370,DropDownStyle=WF.ComboBoxStyle.DropDownList};
-    op.Items.AddRange(numeric?new object[]{"=","!=",">",">=","<","<="}:new object[]{"Contains","Does not contain","Equals","Not equal","Starts with","Ends with"});
-    op.SelectedItem=existing==null?op.Items[0]:existing.Operator;
-    var value=new WF.TextBox {Left=20,Top=60,Width=370,Text=existing==null?"":existing.Text};
-    var hint=new WF.Label {Left=20,Top=92,Width=370,Height=30,Text=numeric?"Enter a number. Length columns use metres.":"Text matching is case-insensitive."};
-    var accept=new WF.Button {Text="Apply filter",Left=20,Top=132,Width=115};
-    var clear=new WF.Button {Text="Clear filter",Left=150,Top=132,Width=110};
-    var cancel=new WF.Button {Text="Cancel",Left=275,Top=132,Width=110,DialogResult=WF.DialogResult.Cancel};
-    accept.Click+=(s,e)=> {
-     decimal number=0;
-     if(numeric && !decimal.TryParse(value.Text,NumberStyles.Float,CultureInfo.CurrentCulture,out number) && !decimal.TryParse(value.Text,NumberStyles.Float,CultureInfo.InvariantCulture,out number)) {WF.MessageBox.Show(dialog,"Enter a valid number.");return;}
-     if(!numeric && string.IsNullOrEmpty(value.Text)) {filters.Remove(column);} else filters[column]=new ColumnFilter {Operator=op.SelectedItem.ToString(),Text=value.Text,Number=number};
-     dialog.DialogResult=WF.DialogResult.OK;
-    };
-    clear.Click+=(s,e)=>{filters.Remove(column);dialog.DialogResult=WF.DialogResult.OK;};
-    dialog.Controls.AddRange(new WF.Control[]{op,value,hint,accept,clear,cancel});dialog.AcceptButton=accept;dialog.CancelButton=cancel;
-    if(dialog.ShowDialog(this)==WF.DialogResult.OK)ApplyView();
-   }
-  }
   bool Matches(Row row,string column,ColumnFilter filter) {
    object value=RowColumns.Value(row,column);
    if(value is string) {
@@ -365,38 +326,16 @@ namespace PipeSplitter2024 {
    switch(filter.Operator) {case "=":return number==filter.Number;case "!=":return number!=filter.Number;case ">":return number>filter.Number;case ">=":return number>=filter.Number;case "<":return number<filter.Number;case "<=":return number<=filter.Number;}
    return false;
   }
-  void ApplyView() {
-   var query=rows.Where(r=>filters.All(f=>Matches(r,f.Key,f.Value)));
-
-   visibleRows=(descending?query.OrderByDescending(r=>RowColumns.Value(r,sortColumn)):query.OrderBy(r=>RowColumns.Value(r,sortColumn))).ThenBy(r=>r.Id).ToList();
-   grid.DataSource=null;grid.DataSource=visibleRows;
-   foreach(WF.DataGridViewColumn c in grid.Columns) {
-    c.SortMode=WF.DataGridViewColumnSortMode.Programmatic;
-    c.HeaderText=c.DataPropertyName+(filters.ContainsKey(c.DataPropertyName)?" [filter]":"");
-    c.HeaderCell.SortGlyphDirection=c.DataPropertyName==sortColumn?(descending?WF.SortOrder.Descending:WF.SortOrder.Ascending):WF.SortOrder.None;
-    if(c.ValueType==typeof(double)) c.DefaultCellStyle.Format="0.000";
-   }
-   filterInfo.Text="Showing "+visibleRows.Count+" of "+rows.Count+" rows. Click a header to sort; right-click to filter.\nApply uses the verified Preview set, including hidden rows. Adding eligible rows requires a new Preview. Summary covers the full scan.\n"+(filters.Count==0?"No column filters.":string.Join("; ",filters.Select(f=>f.Key+" "+f.Value.Operator+" "+f.Value.Text)));UpdateActionButtons();
-  }
-  void ConfigureNumber(WF.NumericUpDown n,decimal value) {n.DecimalPlaces=3;n.Minimum=0.001m;n.Maximum=100000;n.Increment=0.1m;n.Value=value;n.Width=100;}
-  WF.Button Button(WF.Control parent,string text,Action action) {var b=new WF.Button {Text=text,AutoSize=true,Height=36};b.Click+=(s,e)=>{try {action();}catch(Exception ex){DiagnosticLog.Error("UI action",ex);WF.MessageBox.Show(this,ex.Message,"Pipe Splitter");}};parent.Controls.Add(b);return b;}
-  void InvalidateScan() {scanValid=false;ClearSnapshot();preview.Enabled=apply.Enabled=export.Enabled=false;summary.Text="Settings changed. Click Scan again to update the results.";}
   void Scan() {
+   if (running || !ValidateInputs()) return;
    double max=(double)maximum.Value,min=(double)minimum.Value;
    var tolerances=new ModelTolerance(doc);
    DiagnosticLog.Write("Scan", "Document="+doc.Title+"; vertex tolerance (ft)="+tolerances.PointFeet.ToString("R",CultureInfo.InvariantCulture)+"; short curve (ft)="+tolerances.ShortFeet.ToString("R",CultureInfo.InvariantCulture)+"; finished tolerance (m)="+tolerances.LengthMetres.ToString("R",CultureInfo.InvariantCulture));
-   if(min>max || min*Engine.FeetPerMetre<=doc.Application.ShortCurveTolerance*2) throw new Exception("Minimum must be <= maximum and above Revit short-curve tolerance.");
-   var selected=scope.SelectedIndex==1?(pickedIds??ui.Selection.GetElementIds()):null;
-   if(selected!=null && selected.Count==0) throw new Exception("Use Pick pipes in Revit or preselect pipes before opening this command.");
+   if(min>max || min*Engine.FeetPerMetre<=doc.Application.ShortCurveTolerance*2) throw new Exception("Min piece length must not exceed Max finished length and must exceed the Revit short-curve safety limit.");
+   var selected = scope.SelectedIndex == 2 ? GetActiveViewPipeIds()
+       : (scope.SelectedIndex == 1 ? (pickedIds ?? ui.Selection.GetElementIds()) : null);
+   if(scope.SelectedIndex == 1 && selected.Count==0) throw new Exception("Use Pick pipes in Revit or preselect pipes before opening this command.");
    InvalidateScan();LoadRulesSnapshot();takeoutCache.Clear();rows=Engine.Scan(doc,selected,max,min,rules,CurrentPlacement());scanValid=true;RefreshRows("ESTIMATE");export.Enabled=rows.Count>0;SaveSettings();
-  }
-  void RefreshRows(string phase) {
-   ApplyView();
-   var applicable=rows.Where(r=>r.Status.StartsWith("Applied") || (r.Eligible && (r.Passed || r.Status.StartsWith("Estimated")))).ToList();
-   var applicableIds=new HashSet<long>(applicable.Select(r=>r.Id));
-   summary.Text=phase+" | Pipes scanned: "+rows.Count+" | Pipes split / planned: "+applicable.Count+" | Result pieces (split pipes): "+applicable.Sum(r=>r.Pieces)+" | Unions: "+applicable.Sum(r=>r.Unions)+"\n"+
-    "Min / Max (split pipes): "+(applicable.Count>0?applicable.Min(r=>r.Min_m).ToString("0.000")+" / "+applicable.Max(r=>r.Max_m).ToString("0.000")+" m":"—")+" | Existing short: "+rows.Count(r=>r.Status.StartsWith("Existing short"))+" | Skipped / blocked: "+rows.Count(r=>r.Status.StartsWith("Skipped")||r.Status.StartsWith("Blocked")||r.Status.StartsWith("Failed"))+"\n"+
-    "Total resulting pipes in scan scope: "+rows.Sum(r=>applicableIds.Contains(r.Id)?r.Pieces:1)+" | Warnings: "+rows.Sum(r=>r.Warnings.Count)+" | Exact preview includes union takeout.";
   }
   void Export() {
    using(var dialog=new WF.SaveFileDialog {Filter="CSV files|*.csv",FileName="PipeSplitter-report.csv"}) {

@@ -1,3 +1,5 @@
+> Historical Phase 2 document. Phase 3 carry-over fixes supersede host-based insulation placement; UI/cancellation and current verification expectations are in PHASE3-CHANGELOG.md and PHASE3-MANUAL-TEST-PLAN.md.
+
 # Phase 2 changelog - review fixes, 2.0.0.0
 
 Only the requested review fixes are included. Phase 3 layout redesign and Phase 4 are not started. All Revit API behavior remains **needs manual verification**.

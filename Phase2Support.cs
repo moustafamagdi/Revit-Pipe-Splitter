@@ -12,7 +12,19 @@ namespace PipeSplitter2024
 {
     internal sealed class PipePickFilter : ISelectionFilter
     {
-        public bool AllowElement(Element element) { return element is Pipe; }
+        internal static Pipe ResolvePipe(Element element)
+        {
+            Pipe pipe = element as Pipe;
+            if (pipe != null) return pipe;
+            PipeInsulation insulation = element as PipeInsulation;
+            if (insulation == null) return null;
+            return insulation.Document.GetElement(insulation.HostElementId) as Pipe;
+        }
+
+        public bool AllowElement(Element element)
+        {
+            return ResolvePipe(element) != null;
+        }
         public bool AllowReference(Reference reference, XYZ point) { return false; }
     }
     internal sealed class AuditRecord

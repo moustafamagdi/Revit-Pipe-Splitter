@@ -16,6 +16,7 @@ namespace PipeSplitter2024
         [DataMember] public string Remainder { get; set; }
         [DataMember] public bool Strict { get; set; }
         [DataMember] public bool SelectedOnly { get; set; }
+        [DataMember] public bool ActiveViewOnly { get; set; }
         [DataMember] public int WindowWidth { get; set; }
         [DataMember] public int WindowHeight { get; set; }
         [DataMember] public bool Maximized { get; set; }
